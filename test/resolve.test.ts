@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolve, findInText } from "../src/resolve.ts";
+import { resolve, findInText } from "../src/resolve";
 
 const list = [
   { id: 1, nameBn: "পেঁয়াজ", nameEn: "Onion" },
