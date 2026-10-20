@@ -340,6 +340,36 @@ export async function replaceMasterData(db: D1Database, master: MasterData): Pro
   void now;
 }
 
+const JOB_ROW_ID = 1;
+
+/**
+ * Read the ingest job state.
+ *
+ * D1, not KV: the chain hands off between requests and KV's eventual
+ * consistency would let the next step read a stale job and kill the chain.
+ */
+export async function readJob<T>(db: D1Database): Promise<T | null> {
+  const row = await db.prepare(`SELECT job_json FROM ingest_job WHERE id = ?`).bind(JOB_ROW_ID).first<{ job_json: string }>();
+  if (!row?.job_json) return null;
+  try {
+    return JSON.parse(row.job_json) as T;
+  } catch {
+    return null;
+  }
+}
+
+/** Write the ingest job state. */
+export async function writeJob(db: D1Database, job: unknown): Promise<void> {
+  const json = JSON.stringify(job);
+  await db
+    .prepare(
+      `INSERT INTO ingest_job (id, job_json, updated_at) VALUES (?,?,?)
+       ON CONFLICT(id) DO UPDATE SET job_json=excluded.job_json, updated_at=excluded.updated_at`,
+    )
+    .bind(JOB_ROW_ID, json, new Date().toISOString())
+    .run();
+}
+
 export async function recordIngestRun(
   db: D1Database,
   run: {

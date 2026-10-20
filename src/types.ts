@@ -99,10 +99,19 @@ export interface MasterData {
 export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
-  ARCHIVE: R2Bucket;
+  /** R2 is optional — the free plan may not have buckets enabled. */
+  ARCHIVE?: R2Bucket;
+  /** Service binding back into this Worker, used by the ingest chain. */
+  SELF?: Fetcher;
   SITE_ORIGIN: string;
   SOURCE_NAME: string;
   SOURCE_API: string;
   /** Optional shared secret protecting administrative endpoints. */
   ADMIN_TOKEN?: string;
+  /** Telegram bot token (stored as a Worker secret, never in the repo). */
+  TELEGRAM_BOT_TOKEN?: string;
+  /** Telegram channel username, e.g. "@dordekha_bazar". */
+  TELEGRAM_CHANNEL?: string;
+  /** bKash wallet number used to collect payments. */
+  BKASH_NUMBER?: string;
 }

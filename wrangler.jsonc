@@ -10,7 +10,7 @@
     {
       "binding": "DB",
       "database_name": "dordekha",
-      "database_id": "REPLACE_WITH_D1_ID",
+      "database_id": "b8c959ee-d5da-41cb-a336-cfea795cf160",
       "migrations_dir": "migrations"
     }
   ],
@@ -18,24 +18,32 @@
   "kv_namespaces": [
     {
       "binding": "CACHE",
-      "id": "REPLACE_WITH_KV_ID"
+      "id": "0c856163da4147bb9ff14a1d01f2962f"
     }
   ],
 
-  "r2_buckets": [
+  // Service binding for the ingest chain.
+  //
+  // A Worker cannot fetch its own workers.dev hostname: the edge rejects the
+  // subrequest with error 1042 before the code runs. A service binding is
+  // the supported way for a Worker to call itself, and it skips DNS and the
+  // public routing path entirely.
+  "services": [
     {
-      "binding": "ARCHIVE",
-      "bucket_name": "dordekha-archive"
+      "binding": "SELF",
+      "service": "dordekha"
     }
   ],
 
   "triggers": {
-    "crons": ["7 3 * * *"]
+    "crons": ["* * * * *"]
   },
 
   "vars": {
-    "SITE_ORIGIN": "https://dordekha.pages.dev",
+    "SITE_ORIGIN": "https://dordekha.shouroveh9.workers.dev",
     "SOURCE_NAME": "কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM)",
-    "SOURCE_API": "https://moa-services.com/agri-service"
+    "SOURCE_API": "https://moa-services.com/agri-service",
+    "TELEGRAM_CHANNEL": "@dordekha_bazar",
+    "BKASH_NUMBER": "01730534955"
   }
 }

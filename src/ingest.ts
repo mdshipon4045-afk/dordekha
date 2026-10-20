@@ -1,30 +1,54 @@
 /**
  * Ingest pipeline.
  *
- * WHY THIS IS A SELF-CHAINING HTTP JOB
- * ------------------------------------
- * On the Workers Free plan a Cron Trigger gets ~10 ms of CPU. Fetching and
- * parsing 64 district responses in one invocation would blow that budget
- * (JSON.parse alone costs ~20 ms for the full day).
+ * HOW THE JOB IS DRIVEN
+ * ---------------------
+ * The ingest runs on a per-minute cron trigger. Every tick reads the job
+ * position from D1, processes one batch of districts, and writes the new
+ * position back. D1 is used rather than KV because KV is eventually
+ * consistent and the next tick must always see the previous one.
  *
- * CPU time only accrues while code is actually running, not while awaiting
- * I/O — so the trick is to make each invocation tiny and let the job call
- * itself for the next batch. The cron trigger starts the chain; every step
- * handles a handful of districts and hands off.
+ * Two earlier designs were tried and both failed in production:
  *
- * State lives in KV so a crash mid-chain resumes rather than restarts.
+ *  - A Worker fetching its own workers.dev hostname: the edge rejects the
+ *    subrequest with error 1042 before the code ever runs.
+ *  - A `SELF` service binding: the call goes through, but every child
+ *    request is cancelled together with its parent, which produced a storm
+ *    of cancelled requests instead of a chain.
+ *
+ * A cron-driven job has neither problem, and it is easier to reason about:
+ * if a tick is lost, the next one simply continues from the stored
+ * position.
+ *
+ * CPU is the other constraint. On the free plan a cron trigger gets ~10 ms
+ * of CPU, so each tick handles a small number of districts. Waiting for I/O
+ * does not count against the CPU budget, only the JSON parsing does.
  */
 
 import { fetchMasterData, fetchDailyPrices, fetchNationalScroll } from "./moa";
 import { normalizeBatch, type RawUpstreamRow } from "./normalize";
-import { previousValues, recordIngestRun, refreshLatest, replaceMasterData, upsertPrices } from "./db";
+import {
+  previousValues,
+  readJob,
+  recordIngestRun,
+  refreshLatest,
+  replaceMasterData,
+  upsertPrices,
+  writeJob,
+} from "./db";
 import type { Env, MasterData, PriceRecord } from "./types";
 
-const JOB_KEY = "ingest:job";
 const MASTER_KEY = "ingest:master";
 const MASTER_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+/** Districts handled per cron tick. */
 const DISTRICTS_PER_STEP = 4;
-const UPSTREAM_CONCURRENCY = 4;
+
+/** How long a job may sit without progress before it is considered dead. */
+const STALE_AFTER_MS = 10 * 60 * 1000;
+
+/** A new ingest is started when the last completed report is this old. */
+const REFRESH_AFTER_MS = 20 * 60 * 60 * 1000;
 
 export interface IngestJob {
   id: string;
@@ -36,9 +60,20 @@ export interface IngestJob {
   districtsOk: number;
   districtsMissing: number;
   startedAt: string;
+  /** Last time the job made progress. */
+  updatedAt: string;
   steps: number;
   status: "running" | "done" | "failed";
   error?: string;
+}
+
+/** Hands a background promise to the runtime so it survives the response. */
+export type Defer = (fn: () => Promise<unknown>) => void;
+
+function isStale(job: IngestJob): boolean {
+  const last = Date.parse(job.updatedAt || job.startedAt || "");
+  if (Number.isNaN(last)) return true;
+  return Date.now() - last > STALE_AFTER_MS;
 }
 
 /** Master data is stable for months; cache it so ingest does not refetch it. */
@@ -73,27 +108,59 @@ async function targetDates(env: Env, lookbackDays: number): Promise<string[]> {
 }
 
 /**
- * Hands a background promise to the runtime so it survives the response.
- * The Worker passes `ctx.waitUntil`; tests pass a collector.
+ * The per-minute heartbeat. This is the only thing that drives the job in
+ * production, and it is also what starts a new job when one is due.
  */
-export type Defer = (fn: () => Promise<unknown>) => void;
+export async function cronTick(env: Env): Promise<{ action: string; job?: IngestJob }> {
+  const existing = await readJob<IngestJob>(env.DB);
 
-/** Kick off a new ingest chain. Safe to call repeatedly. */
-export async function startIngest(
-  env: Env,
-  baseUrl: string,
-  token: string,
-  defer: Defer,
-  lookbackDays = 5,
-): Promise<IngestJob> {
-  const existing = await env.CACHE.get(JOB_KEY, "json");
-  if (existing && (existing as IngestJob).status === "running") {
-    // A job is already in flight; do not start a second one.
-    return existing as IngestJob;
+  if (existing && existing.status === "running") {
+    if (isStale(existing)) {
+      console.log(`ingest job ${existing.id} is stale — restarting it`);
+      return { action: "restarted", job: await startIngest(env) };
+    }
+    return { action: "step", job: await advance(env, existing) };
   }
 
+  // No job running. Decide whether one is due.
+  const last = await lastCompletedReport(env.DB);  const age = last ? Date.now() - Date.parse(last) : Number.POSITIVE_INFINITY;
+  if (age > REFRESH_AFTER_MS) {
+    return { action: "started", job: await startIngest(env) };
+  }
+  return { action: "idle" };
+}
+
+/** The most recent date that finished a full district sweep. */
+async function lastCompletedReport(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT MAX(price_date) AS d FROM ingest_run WHERE scope = 'district' AND status IN ('ok','partial')`)
+    .first<{ d: string | null }>();
+  return row?.d ?? null;
+}
+
+/** Create a job and process its first batch. */
+export async function startIngest(env: Env): Promise<IngestJob> {
   const master = await getMaster(env);
-  const dates = await targetDates(env, lookbackDays);
+  const dates = await targetDates(env, 5);
+
+  if (dates.length === 0) {
+    console.log("no report dates available yet");
+    return {
+      id: "noop",
+      priceDates: [],
+      dateIndex: 0,
+      districtIndex: 0,
+      districts: [],
+      rowsWritten: 0,
+      districtsOk: 0,
+      districtsMissing: 0,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      steps: 0,
+      status: "done",
+      error: "no report dates available",
+    };
+  }
 
   const job: IngestJob = {
     id: `job_${Date.now().toString(36)}`,
@@ -105,37 +172,28 @@ export async function startIngest(
     districtsOk: 0,
     districtsMissing: 0,
     startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     steps: 0,
     status: "running",
   };
 
-  await env.CACHE.put(JOB_KEY, JSON.stringify(job), { expirationTtl: 3600 });
+  await writeJob(env.DB, job);
   await recordIngestRun(env.DB, {
-    priceDate: dates[0] ?? new Date().toISOString().slice(0, 10),
+    priceDate: dates[0]!,
     scope: "district",
     startedAt: job.startedAt,
     status: "running",
   });
 
-  chain(env, baseUrl, token, defer);
-  return job;
+  return advance(env, job);
 }
 
-/** Process one batch and schedule the next one. */
-export async function stepIngest(env: Env, baseUrl: string, token: string, defer: Defer): Promise<IngestJob> {
-  const raw = await env.CACHE.get(JOB_KEY, "json");
-  if (!raw) throw new Error("no ingest job in state");
-  const job = raw as IngestJob;
-  if (job.status !== "running") return job;
-  return advance(env, baseUrl, token, defer, job);
-}
-
-async function advance(env: Env, baseUrl: string, token: string, defer: Defer, job: IngestJob): Promise<IngestJob> {
-  const master = await getMaster(env);
+/** Process one batch of districts and write the new position back. */
+export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   const current = job.priceDates[job.dateIndex];
   if (!current) {
     job.status = "done";
-    await env.CACHE.put(JOB_KEY, JSON.stringify(job), { expirationTtl: 3600 });
+    await writeJob(env.DB, job);
     return job;
   }
 
@@ -160,6 +218,7 @@ async function advance(env: Env, baseUrl: string, token: string, defer: Defer, j
   for (const res of results) {
     if (res.error) {
       missing++;
+      console.error(`district ${res.districtId} failed: ${res.error}`);
       continue;
     }
     if (res.rows.length === 0) {
@@ -181,6 +240,7 @@ async function advance(env: Env, baseUrl: string, token: string, defer: Defer, j
   job.districtsMissing += missing;
   job.districtIndex += batch.length;
   job.steps++;
+  job.updatedAt = new Date().toISOString();
 
   if (job.districtIndex >= job.districts.length) {
     await refreshLatest(env.DB, current);
@@ -194,42 +254,41 @@ async function advance(env: Env, baseUrl: string, token: string, defer: Defer, j
       districtsMissing: missing,
       status: missing === 0 ? "ok" : "partial",
     });
+    // Publish the daily digest to Telegram, once the date is complete.
+    try {
+      const { publishDigest } = await import("./telegram");
+      const res = await publishDigest(env, await buildDigestInput(env, current));
+      if (res.sent) console.log(`digest published for ${current}`);
+      else if (res.error) console.log(`digest skipped: ${res.error}`);
+    } catch (err) {
+      console.error("digest failed", err);
+    }
     job.dateIndex++;
     job.districtIndex = 0;
   }
 
   if (job.dateIndex >= job.priceDates.length) {
     job.status = "done";
-    await env.CACHE.put(JOB_KEY, JSON.stringify(job), { expirationTtl: 3600 });
+    await writeJob(env.DB, job);
     await backfillNational(env, job);
+    console.log(`ingest job ${job.id} finished: ${job.rowsWritten} rows`);
     return job;
   }
 
-  await env.CACHE.put(JOB_KEY, JSON.stringify(job), { expirationTtl: 3600 });
-  chain(env, baseUrl, token, defer);
+  await writeJob(env.DB, job);
   return job;
 }
 
-/** Schedule the next step of the chain without blocking the current request. */
-function chain(env: Env, baseUrl: string, token: string, defer: Defer): void {
-  const url = `${baseUrl.replace(/\/$/, "")}/internal/ingest/step`;
-  defer(async () => {
-    try {
-      await fetch(url, { method: "POST", headers: { "X-Admin-Token": token } });
-    } catch (err) {
-      // Surface the failure in the job state so the health endpoint shows it.
-      try {
-        const raw = await env.CACHE.get(JOB_KEY, "json");
-        if (raw) {
-          const job = raw as IngestJob;
-          job.error = err instanceof Error ? err.message : String(err);
-          await env.CACHE.put(JOB_KEY, JSON.stringify(job), { expirationTtl: 3600 });
-        }
-      } catch {
-        /* best effort */
-      }
-    }
-  });
+/** Process exactly one batch on demand (used by the admin endpoint). */
+export async function stepIngest(env: Env): Promise<IngestJob> {
+  const job = await readJob<IngestJob>(env.DB);
+  if (!job) throw new Error("no ingest job in state");
+  if (job.status !== "running") return job;
+  if (isStale(job)) {
+    console.log(`ingest job ${job.id} is stale — restarting from the current position`);
+    return startIngest(env);
+  }
+  return advance(env, job);
 }
 
 /**
@@ -303,6 +362,57 @@ async function backfillNational(env: Env, job: IngestJob): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * Assemble the digest input for one report date: the rows for the headline
+ * commodities, ready to be turned into a message.
+ */
+export async function buildDigestInput(env: Env, priceDate: string) {
+  const { results: cs } = await env.DB
+    .prepare(`SELECT id, name_bn FROM commodity WHERE name_bn IN (?,?,?,?,?,?)`)
+    .bind("পেঁয়াজ", "চাল", "আলু (দেশীয়)", "ডিম ফার্ম- লাল", "তৈল- সরিষা-দেশীয় -সাধারণ", "ডাল")
+    .all();
+
+  const featured = (cs ?? []).map((c) => String((c as Record<string, unknown>).name_bn ?? "")).filter(Boolean);
+
+  const { results: rows } = await env.DB
+    .prepare(
+      `SELECT c.name_bn AS commodity, d.name_bn AS district,
+              p.retail_min, p.retail_max, p.retail_avg, p.wholesale_avg,
+              p.carried_forward, u.name_bn AS unit
+         FROM price_latest p
+         JOIN commodity c ON c.id = p.commodity_id
+         JOIN district d ON d.id = p.district_id
+         LEFT JOIN unit u ON u.id = p.retail_unit
+        WHERE p.price_date = ? AND p.upazila_id = 0`,
+    )
+    .bind(priceDate)
+    .all();
+
+  const digestRows = (rows ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    return {
+      commodityBn: String(row.commodity ?? ""),
+      districtBn: String(row.district ?? ""),
+      retail: {
+        min: (row.retail_min as number | null) ?? null,
+        max: (row.retail_max as number | null) ?? null,
+        avg: (row.retail_avg as number | null) ?? null,
+        unitBn: String(row.unit ?? "কেজি"),
+      },
+      wholesale: { avg: (row.wholesale_avg as number | null) ?? null },
+      carriedForward: Number(row.carried_forward) === 1,
+    };
+  });
+
+  return {
+    date: priceDate,
+    rows: digestRows,
+    origin: env.SITE_ORIGIN.replace(/\/$/, ""),
+    sourceName: env.SOURCE_NAME,
+    featured,
+  };
 }
 
 /** Refresh master data (weekly job). */

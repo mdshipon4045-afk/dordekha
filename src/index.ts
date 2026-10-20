@@ -20,7 +20,7 @@ import {
 import { formatBdt, toAsciiNumber } from "./normalize";
 import { matchScore } from "./bn";
 import { resolve } from "./resolve";
-import { refreshMaster, startIngest, stepIngest } from "./ingest";
+import { refreshMaster, startIngest, stepIngest, buildDigestInput, cronTick } from "./ingest";
 import {
   esc,
   factUrl,
@@ -190,16 +190,50 @@ export default {
         }
         const base = env.SITE_ORIGIN.replace(/\/$/, "");
         if (path === "/internal/ingest/start") {
-          const job = await startIngest(env, base, token ?? "", (fn) => ctx.waitUntil(fn()));
+          const job = await startIngest(env);
           return json({ started: true, job }, ctxR);
         }
         if (path === "/internal/ingest/step") {
-          const job = await stepIngest(env, base, token ?? "", (fn) => ctx.waitUntil(fn()));
+          const job = await stepIngest(env);
           return json({ job }, ctxR);
+        }
+        if (path === "/internal/ingest/tick") {
+          const result = await cronTick(env);
+          return json(result, ctxR);
         }
         if (path === "/internal/master/refresh") {
           const stats = await refreshMaster(env);
           return json({ refreshed: true, ...stats }, ctxR);
+        }
+        if (path === "/internal/telegram/check") {
+          const { checkTelegram, telegramConfig } = await import("./telegram");
+          const config = telegramConfig(env);
+          if (!config) return json({ ok: false, error: "Telegram is not configured" }, ctxR, 400);
+          return json(await checkTelegram(config), ctxR);
+        }
+        if (path === "/internal/telegram/test") {
+          const { publishDigest } = await import("./telegram");
+          const res = await publishDigest(env, {
+            date: ctxR.latestDate ?? new Date().toISOString().slice(0, 10),
+            rows: [
+              {
+                commodityBn: "পেঁয়াজ",
+                districtBn: "ঢাকা",
+                retail: { min: 43, max: 47, avg: 45, unitBn: "কিলোগ্রাম" },
+                wholesale: { avg: 38 },
+                carriedForward: false,
+              },
+            ],
+            origin: ctxR.origin,
+            sourceName: ctxR.sourceName,
+            featured: ["পেঁয়াজ"],
+          });
+          return json(res, ctxR, res.sent ? 200 : 500);
+        }
+        if (path === "/internal/telegram/digest") {
+          const { publishDigest } = await import("./telegram");
+          const res = await publishDigest(env, await buildDigestInput(env, ctxR.latestDate ?? new Date().toISOString().slice(0, 10)));
+          return json(res, ctxR, res.sent ? 200 : 500);
         }
         return json({ error: "Not Found" }, ctxR, 404);
       }
@@ -238,14 +272,17 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // The cron only starts the chain; each step is a separate, tiny invocation.
-    const base = env.SITE_ORIGIN.replace(/\/$/, "");
+    // The cron runs every minute. Each tick either continues the ingest job
+    // or starts a new one when one is due. There is no self-call: a Worker
+    // cannot reliably call itself in production, and the job position lives
+    // in D1 so a lost tick costs one minute, not the whole run.
     ctx.waitUntil(
       (async () => {
         try {
-          await startIngest(env, base, env.ADMIN_TOKEN ?? "", (fn) => ctx.waitUntil(fn()));
+          const result = await cronTick(env);
+          if (result.action !== "idle") console.log(`cron tick: ${result.action}`);
         } catch (err) {
-          console.error("ingest start failed", err);
+          console.error("cron tick failed", err);
         }
       })(),
     );
