@@ -235,6 +235,8 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   if (records.length > 0) {
     const written = await upsertPrices(env.DB, records);
     job.rowsWritten += written;
+    // Keep the read path fresh while the date is still being collected.
+    await refreshLatest(env.DB, current);
   }
   job.districtsOk += ok;
   job.districtsMissing += missing;

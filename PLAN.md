@@ -46,11 +46,27 @@
 - **53.89% of rows are carry-forwards** — upstream copies the previous day's figure more than half the time. Charts must not imply movement that was not reported.
 - 1 unit-pair group needed a repair (54 rows), 15 rows could not be verified at all — both are labelled, never hidden.
 
-## Phase 2 — Deployment (needs 1 account) 🔥 **BLOCKED ON HUMAN**
-- [!] Cloudflare account + login → deploy Worker, create D1 + KV, set cron → **`docs/DEPLOY-BN.md`**
-- [ ] Domain (from revenue): `.cc` ≈ $8 at Cloudflare Registrar; `eu.org` free subdomain as stopgap
-- [ ] Telegram bot token + channel @username
-- [ ] GitHub repo for source + backup
+## Phase 2 — Deployment ✅ **LIVE**
+- [x] Cloudflare account + OAuth login
+- [x] D1 database `dordekha` (`b8c959ee-…`) + migration 0001 (schema) and 0002 (ingest job state)
+- [x] KV namespace `CACHE` (`0c856163da…`)
+- [x] Worker deployed → **https://dordekha.shouroveh9.workers.dev**
+- [x] Cron trigger `* * * * *` — the per-minute heartbeat that drives the ingest
+- [x] Secrets: `TELEGRAM_BOT_TOKEN`, `ADMIN_TOKEN` (local copy in `.dev.vars`, git-ignored)
+- [x] `SITE_ORIGIN` set to the real origin (the workers.dev hostname, not a pages.dev one)
+- [!] Telegram: bot `@dordekha_bazar_bot` created; **still needs to be added as an administrator of `@dordekha_bazar`**
+- [ ] Domain (from revenue): `.cc` ≈ $8 at Cloudflare Registrar
+- [ ] R2 bucket — the free plan has no buckets, so raw archiving is disabled (not required)
+
+### Production bugs found and fixed (none of them appeared locally)
+1. **KV is eventually consistent** — the ingest job state moved to D1, so the next step always sees the previous one.
+2. **A Worker cannot fetch its own workers.dev hostname** — the edge rejects the subrequest with error 1042 before the code runs.
+3. **A `SELF` service binding is not a fix** — children are cancelled together with their parent, producing a storm of cancelled requests.
+4. **Subrequest depth limit (16 Workers stages)** — a chained self-call design can never exceed 16 steps.
+   → Final design: a per-minute cron reads the job position from D1 and processes one batch per tick. No self-calls at all.
+5. **Stale job blocks restarts** — a job stuck in "running" made every later start a no-op. Added staleness detection and recovery.
+6. **`price_latest` was only refreshed at the end of a date** — the site looked empty for 16 minutes. Now refreshed after every batch.
+7. **Non-ASCII HTTP header** — the Bangla source name in a response header threw inside the error handler, masking every real error as an empty 500.
 
 ## Phase 3 — Distribution (all autonomous once deployed)
 - [ ] MCP Registry publish · Anthropic Connectors Directory · ChatGPT App Directory
@@ -60,7 +76,7 @@
 - [ ] Search Console + "Search generative AI features" opt-in
 - [ ] Audit Cloudflare AI Crawl Control defaults (Sept 15 2026 default blocks Googlebot on ad pages)
 - [ ] B2B cold-outreach autopilot (40–100 prospects, personalised Bangla)
-- [ ] Telegram daily digest + price-threshold alerts
+- [ ] Telegram daily digest + price-threshold alerts ← needs the bot as channel admin
 
 ## Phase 4 — Monetisation
 - [ ] Lemon Squeezy store (global) + bKash merchant (BD) + Payoneer

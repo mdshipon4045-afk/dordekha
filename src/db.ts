@@ -141,16 +141,15 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
   return written;
 }
 
-/** Refresh the materialised "latest" table from the most recent report date. */
+/**
+ * Refresh the materialised "latest" table for one report date.
+ *
+ * This runs after every batch, not only when a date finishes, so the site
+ * shows fresh figures while a date is still being collected. It is an
+ * upsert rather than a delete-and-reinsert so the cost does not grow with
+ * the size of the date.
+ */
 export async function refreshLatest(db: D1Database, priceDate: string): Promise<number> {
-  await db.prepare(
-    `DELETE FROM price_latest
-      WHERE (district_id, upazila_id, commodity_id) IN (
-        SELECT district_id, upazila_id, commodity_id FROM price_daily WHERE price_date = ?)`,
-  )
-    .bind(priceDate)
-    .run();
-
   const res = await db
     .prepare(
       `INSERT INTO price_latest (
@@ -163,7 +162,16 @@ export async function refreshLatest(db: D1Database, priceDate: string): Promise<
          retail_min, retail_max, retail_avg, retail_unit,
          wholesale_min, wholesale_max, wholesale_avg, wholesale_unit,
          wholesale_divisor, wholesale_divisor_src, carried_forward, anomaly, ?
-       FROM price_daily WHERE price_date = ?`,
+       FROM price_daily WHERE price_date = ? AND true
+       ON CONFLICT(district_id, upazila_id, commodity_id) DO UPDATE SET
+         group_id=excluded.group_id, sub_group_id=excluded.sub_group_id,
+         price_date=excluded.price_date,
+         retail_min=excluded.retail_min, retail_max=excluded.retail_max, retail_avg=excluded.retail_avg,
+         retail_unit=excluded.retail_unit,
+         wholesale_min=excluded.wholesale_min, wholesale_max=excluded.wholesale_max, wholesale_avg=excluded.wholesale_avg,
+         wholesale_unit=excluded.wholesale_unit,
+         wholesale_divisor=excluded.wholesale_divisor, wholesale_divisor_src=excluded.wholesale_divisor_src,
+         carried_forward=excluded.carried_forward, anomaly=excluded.anomaly, updated_at=excluded.updated_at`,
     )
     .bind(new Date().toISOString(), priceDate)
     .run();
