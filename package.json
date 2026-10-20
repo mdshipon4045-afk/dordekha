@@ -1,0 +1,30 @@
+{
+  "name": "dordekha",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "দরদেখা — Bangladesh official market price ground-truth service",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node tools/e2e.mjs",
+    "typecheck": "tsc --noEmit",
+    "probe": "node tools/probe.mjs",
+    "probe2": "node tools/probe2.mjs",
+    "d1:create": "wrangler d1 create dordekha",
+    "d1:migrate:local": "wrangler d1 migrations apply dordekha --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply dordekha --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.151.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "workerd@1.20261019.1": true
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dordekha",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dordekha",
+      "database_id": "REPLACE_WITH_D1_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "REPLACE_WITH_KV_ID"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "ARCHIVE",
+      "bucket_name": "dordekha-archive"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["7 3 * * *"]
+  },
+
+  "vars": {
+    "SITE_ORIGIN": "https://dordekha.pages.dev",
+    "SOURCE_NAME": "কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM)",
+    "SOURCE_API": "https://moa-services.com/agri-service"
+  }
+}
