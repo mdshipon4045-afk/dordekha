@@ -116,16 +116,40 @@ checked against the database first; these were true and are now fixed.
 | 8 | `/health` **leaked the internal pipeline state** publicly | Public health returns only what a monitor needs; detail moved behind the admin path |
 
 ### The constraint the review exposed
-D1's free tier allows **100,000 rows written per day**. A 16-month backfill is
-~700,000 rows, and the old ingest was spending the whole budget rewriting the
-snapshot table on every call (423,533 rows over 119 calls). The ingest now
-collects only the report days it is missing, refreshes the snapshot for the
-districts it wrote, and stops itself at 80,000 rows a day rather than locking
-the database out until midnight UTC.
+D1's free tier allows **100,000 rows written per day** and **5,000,000 rows read per day**. A 16-month
+backfill is ~700,000 rows, and the old ingest was spending the whole write budget rewriting the
+snapshot table on every call (423,533 rows over 119 calls). The ingest now collects only the report
+days it is missing, refreshes the snapshot for the districts it wrote, and stops itself at 80,000
+rows a day rather than locking the database out until midnight UTC.
 
-**Consequence:** the history grows by roughly 20 report days a day, and the
-site's claim about it is computed, never asserted. The full upstream archive is
-reachable but is not yet held here.
+### The constraint the read limit exposed
+The read budget ran out within hours, because the read patterns were full table scans: `MAX(price_date)`
+over the fact table, a `GROUP BY` over the whole snapshot table for the busiest district, and `COUNT`
+over everything for the statistics strip. When the budget ran out, **every page answered 500** — and
+for a price service that looks exactly like the data has been lost.
+
+Three changes made the site survive it:
+
+1. **The missing indexes** (migration `0004_indexes.sql`). `price_latest` had no index on
+   `commodity_id`, so "every district's price for this commodity" scanned the whole table.
+2. **The daily aggregates are cached in KV** — latest date, row counts, how far back the history
+   reaches, the busiest district, the carried-forward share. They change at most once a day and were
+   being recomputed on every request.
+3. **The current prices, the price history and the reference data are also snapshotted in KV**, and
+   every read path falls back to them when the database cannot be read. The site degrades to
+   slightly stale data instead of to nothing.
+
+Verified: **58 of 58 end-to-end checks pass with the database completely unreadable.**
+
+> ⏳ **Pending:** migration `0004_indexes.sql` cannot be applied until the daily read budget resets
+> (midnight UTC). Until then the site runs on the cached snapshot and the indexes are not yet in
+> place, so the read budget stays tight. Run
+> `npx wrangler d1 migrations apply dordekha --remote` after the reset.
+> The snapshot is rebuilt after each ingest, so once the budget resets the database-backed path
+> takes over and the cache becomes the fallback rather than the primary.
+
+**Consequence:** the history grows by roughly 20 report days a day, and the site's claim about it
+is computed, never asserted. The full upstream archive is reachable but is not yet held here.
 
 ## Kill switch
 If 6 months pass with <3 paying customers ⇒ wind down cleanly, export data, keep the open dataset.
