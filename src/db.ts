@@ -6,7 +6,7 @@
 
 import type { MasterData, PriceRecord } from "./types";
 import { commoditySlug, districtSlug } from "./slug";
-import { getAggregates, getHistorySnapshot, getMasterSnapshot, getSnapshot, type HistoryRow, type SnapshotRow } from "./cache";
+import { getAggregates, getHistoryRows, getHistorySnapshot, getMasterSnapshot, getSnapshot, type HistoryRow, type SnapshotRow } from "./cache";
 import { cleanPrice } from "./quality";
 import type { Env } from "./types";
 
@@ -206,7 +206,7 @@ export async function unitNames(env: Env): Promise<Map<number, string>> {
   }
 }
 
-/** Price history, from the database or the cached copy. */
+/** Price history, from the cached history or the database. */
 export async function historyForOrSnapshot(
   env: Env,
   commodityId: number,
@@ -214,6 +214,17 @@ export async function historyForOrSnapshot(
   sinceDate: string,
   limit = 400,
 ): Promise<PriceRowOut[]> {
+  // The sharded history in the cache first: it is free, the ingest keeps it
+  // up to date, and it costs the database nothing. This is the path that
+  // keeps the trend tool from reading the whole price table.
+  const cached = await getHistoryRows(env, commodityId, districtId);
+  if (cached.length > 0) {
+    return cached
+      .filter((r) => r.t >= sinceDate)
+      .sort((a, b) => (a.t < b.t ? 1 : -1))
+      .slice(0, limit)
+      .map(historyRowToOut);
+  }
   try {
     return await historyFor(env.DB, commodityId, districtId, sinceDate, limit);
   } catch (err) {

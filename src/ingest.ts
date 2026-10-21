@@ -37,7 +37,7 @@ import {
   upsertPrices,
   writeJob,
 } from "./db";
-import { getAggregates, getMasterSnapshot, getSnapshot, setMasterSnapshot, toMasterSnapshot } from "./cache";
+import { getAggregates, getMasterSnapshot, getSnapshot, setHistoryDate, setMasterSnapshot, toMasterSnapshot, type HistoryRow } from "./cache";
 import { hasRequiredIndexes } from "./maintenance";
 import { notifyIndexNow } from "./indexnow";
 import { commoditySlug, districtSlug } from "./slug";
@@ -256,6 +256,37 @@ async function historyDecision(env: Env): Promise<HistoryDecision> {
  * The per-minute heartbeat. This is the only thing that drives the job in
  * production, and it is also what starts a new job when one is due.
  */
+/**
+ * The normalised records in the shape the cached history keeps.
+ *
+ * The unit provenance travels with them: a history that cannot say which
+ * divisor produced a number is a history that cannot be audited.
+ */
+function toHistoryRows(records: PriceRecord[]): HistoryRow[] {
+  return records.map((r) => ({
+    t: r.priceDate,
+    d: r.districtId,
+    c: r.commodityId,
+    rmin: r.retail?.min ?? null,
+    rmax: r.retail?.max ?? null,
+    ravg: r.retail?.avg ?? null,
+    ru: r.retail?.unitId ?? null,
+    wmin: r.wholesale?.min ?? null,
+    wmax: r.wholesale?.max ?? null,
+    wavg: r.wholesale?.avg ?? null,
+    wu: r.wholesale?.unitId ?? null,
+    wru: r.wholesale?.rawUnitId ?? null,
+    wdiv: r.wholesale?.divisor ?? null,
+    wdivsrc: r.wholesale?.divisorSource ?? null,
+    cf: r.carriedForward ? 1 : 0,
+    an: r.anomaly,
+  }));
+}
+
+/**
+ * The per-minute heartbeat. It continues the ingest job, or starts one when
+ * one is due.
+ */
 export async function cronTick(env: Env): Promise<{ action: string; job?: IngestJob }> {
   const existing = await readJob<IngestJob>(env.DB);
 
@@ -454,6 +485,14 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
     const written = await upsertPrices(env.DB, records);
     job.rowsWritten += written;
     await budgetAdd(env, written * 2); // the fact table and the snapshot table
+    // Keep the cached history in step, so the site's claim about how far
+    // back it reaches stays true. One shard per district per day, written
+    // as the sweep goes — no database read to do it.
+    try {
+      await setHistoryDate(env, current, toHistoryRows(records));
+    } catch (err) {
+      console.error("history cache write failed", err);
+    }
     // Refresh the read path for exactly the districts we just wrote.
     await refreshLatestFor(
       env.DB,

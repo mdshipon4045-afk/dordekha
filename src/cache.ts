@@ -138,18 +138,15 @@ const EMPTY_AGGREGATES: Aggregates = {
  * snapshot has the reference lists.
  */
 async function computeAggregatesFromCache(env: Env): Promise<Aggregates | null> {
-  const [snap, hist, master] = await Promise.all([
+  const [snap, master, history] = await Promise.all([
     getSnapshot(env),
-    getHistorySnapshot(env),
     getMasterSnapshot(env),
+    getHistorySummary(env),
   ]);
   if (!snap || snap.rows.length === 0) return null;
 
   const rows = snap.rows;
-  const history = hist?.rows ?? [];
-
-  const dates = new Set<string>();
-  for (const r of history) dates.add(r.t);
+  const dates = new Set<string>(history.dates);
   for (const r of rows) dates.add(r.t);
   const sortedDates = [...dates].sort();
   const latest = sortedDates[sortedDates.length - 1] ?? null;
@@ -174,7 +171,7 @@ async function computeAggregatesFromCache(env: Env): Promise<Aggregates | null> 
     latestDate: latest,
     firstDate: first,
     days: sortedDates.length,
-    rowCount: history.length > 0 ? history.length : rows.length,
+    rowCount: history.rows > 0 ? history.rows : rows.length,
     commodityCount: master?.commodities.length ?? 0,
     districtCount: master?.districts.length ?? 0,
     commoditiesWithData: new Set(latestRows.map((r) => r.c)).size,
@@ -398,6 +395,159 @@ export async function getHistorySnapshot(env: Env): Promise<{ rows: HistoryRow[]
 
 export async function setHistorySnapshot(env: Env, rows: HistoryRow[]): Promise<void> {
   await kvSet(env, HISTORY_KEY, { rows }, SNAPSHOT_TTL);
+}
+
+/* ── The history, sharded ──────────────────────────────────────────────────── */
+
+/**
+ * The history used to live in one key. It does not any more.
+ *
+ * One key held every row: 1.92 MB for three days, and KV allows 25 MB for
+ * one value. At that rate the value would have failed at about forty days,
+ * and the site would have gone on claiming a history it could no longer
+ * serve. Worse, nothing rebuilt it except a manual upload, so the claim was
+ * already frozen at three days.
+ *
+ * Now the history is sharded by day and district — one key per district per
+ * day, about ten kilobytes each — and a small manifest says which days
+ * exist. A day of sixty-four districts costs sixty-four writes, which the
+ * free tier can afford, and the trend of one commodity in one district
+ * costs one read per day instead of a scan of everything.
+ */
+
+const HISTORY_INDEX_KEY = "history:index";
+const HISTORY_SHARD_PREFIX = "history:date:";
+
+export interface HistoryDay {
+  date: string;
+  /** The districts that reported on that day. */
+  districts: number[];
+  rows: number;
+}
+
+export interface HistoryManifest {
+  days: HistoryDay[];
+  updatedAt: string;
+}
+
+function shardKey(date: string, district: number): string {
+  return `${HISTORY_SHARD_PREFIX}${date}:${district}`;
+}
+
+async function readManifest(env: Env): Promise<HistoryManifest> {
+  const manifest = await kvGet<HistoryManifest>(env, HISTORY_INDEX_KEY);
+  if (manifest && Array.isArray(manifest.days)) return manifest;
+  return { days: [], updatedAt: new Date(0).toISOString() };
+}
+
+/**
+ * Store rows for one day.
+ *
+ * A district's shard is replaced, so a day written again does not double
+ * up. The manifest keeps the union of the districts that reported, because
+ * the ingest writes a day four districts at a time and only the last batch
+ * would know about all sixty-four.
+ */
+export async function setHistoryDate(env: Env, date: string, rows: HistoryRow[]): Promise<void> {
+  const byDistrict = new Map<number, HistoryRow[]>();
+  for (const row of rows) {
+    const list = byDistrict.get(row.d) ?? [];
+    list.push(row);
+    byDistrict.set(row.d, list);
+  }
+
+  const manifest = await readManifest(env);
+  const previous = manifest.days.find((d) => d.date === date);
+
+  for (const [district, districtRows] of byDistrict) {
+    await kvSet(env, shardKey(date, district), { date, district, rows: districtRows }, SNAPSHOT_TTL);
+  }
+
+  const districts = [...new Set([...(previous?.districts ?? []), ...byDistrict.keys()])].sort((a, b) => a - b);
+  const days = manifest.days.filter((d) => d.date !== date);
+  days.push({ date, districts, rows: rows.length });
+  days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  await kvSet(env, HISTORY_INDEX_KEY, { days, updatedAt: new Date().toISOString() }, SNAPSHOT_TTL);
+}
+
+/** The days the history holds, oldest first. */
+export async function getHistoryDates(env: Env): Promise<string[]> {
+  const manifest = await readManifest(env);
+  if (manifest.days.length > 0) return manifest.days.map((d) => d.date);
+
+  // The old single-key form, for a site that has not been rebuilt yet.
+  const legacy = await getHistorySnapshot(env);
+  if (!legacy || legacy.rows.length === 0) return [];
+  return [...new Set(legacy.rows.map((r) => r.t))].sort();
+}
+
+/** Every row of one day. */
+export async function getHistoryForDate(env: Env, date: string): Promise<HistoryRow[]> {
+  const manifest = await readManifest(env);
+  const day = manifest.days.find((d) => d.date === date);
+
+  if (day) {
+    const shards = await Promise.all(
+      day.districts.map(async (district) => {
+        const shard = await kvGet<{ rows: HistoryRow[] }>(env, shardKey(date, district));
+        return shard?.rows ?? [];
+      }),
+    );
+    return shards.flat();
+  }
+
+  const legacy = await getHistorySnapshot(env);
+  if (!legacy) return [];
+  return legacy.rows.filter((r) => r.t === date);
+}
+
+/** How far back the history reaches, and how many rows it holds. */
+export async function getHistorySummary(env: Env): Promise<{ dates: string[]; rows: number }> {
+  const manifest = await readManifest(env);
+  if (manifest.days.length > 0) {
+    return {
+      dates: manifest.days.map((d) => d.date),
+      rows: manifest.days.reduce((n, d) => n + d.rows, 0),
+    };
+  }
+  const legacy = await getHistorySnapshot(env);
+  if (!legacy || legacy.rows.length === 0) return { dates: [], rows: 0 };
+  return {
+    dates: [...new Set(legacy.rows.map((r) => r.t))].sort(),
+    rows: legacy.rows.length,
+  };
+}
+
+/**
+ * One commodity in one district, across every day the history holds.
+ *
+ * This is the shape the trend tool asks for, and the reason the history is
+ * sharded by district: one read per day, not one read of everything.
+ */
+export async function getHistoryRows(
+  env: Env,
+  commodityId: number,
+  districtId: number,
+): Promise<HistoryRow[]> {
+  const manifest = await readManifest(env);
+  if (manifest.days.length > 0) {
+    const out: HistoryRow[] = [];
+    for (const day of manifest.days) {
+      if (!day.districts.includes(districtId)) continue;
+      const shard = await kvGet<{ rows: HistoryRow[] }>(env, shardKey(day.date, districtId));
+      if (!shard) continue;
+      for (const row of shard.rows) {
+        if (row.c === commodityId) out.push(row);
+      }
+    }
+    return out;
+  }
+
+  const legacy = await getHistorySnapshot(env);
+  if (!legacy) return [];
+  return legacy.rows
+    .filter((r) => r.c === commodityId && r.d === districtId)
+    .sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
 }
 
 /** Write a set of aggregates into the cache (used by the upload path). */
