@@ -203,9 +203,53 @@ If 6 months pass with <3 paying customers ⇒ wind down cleanly, export data, ke
 
 ## Human action checklist
 (only these; everything else is the agent's job)
-1. [ ] **Create a Cloudflare account** → `docs/DEPLOY-BN.md` step 1  ← *start here*
-2. [ ] Telegram: BotFather token + channel @username
-3. [ ] bKash personal number (for receiving payments)
-4. [ ] Sign + send the DAM/ডিসিম data-licence letter (agent drafts it)
+1. [x] **Create a Cloudflare account** → `docs/DEPLOY-BN.md` step 1  ← *done*
+2. [x] Telegram: BotFather token + channel @username  ← *done* (id -1004442758387)
+3. [x] bKash personal number (for receiving payments)  ← *done* (01730534955)
+4. [ ] Sign + send the DAM/ডিসিম data-licence letter — **draft ready**: `docs/licence-letter-DAM.md`
 5. [ ] One Facebook-group post per week (agent writes the text)
 6. [ ] Confirm 2–5 incoming payments per month (agent lists amount + txn id)
+7. [ ] Make the GitHub repo public + publish to the MCP Registry — **guide ready**:
+   `docs/PUBLISH-MCP.md` (only 2 placeholders to fill in `server.json`)
+
+---
+
+## The funding rule (set by the owner, 21 Oct 2026)
+
+> **No money is spent until the product earns money. Everything runs on free tiers.**
+
+This is not a preference, it is a constraint the whole design obeys:
+
+| The temptation | What we do instead |
+|---|---|
+| Workers Paid ($5/mo) to lift the D1 read ceiling | Every read path reads the **KV cache first**; the home page now costs **zero** database rows. The ceiling is a design problem, not a billing problem. |
+| A paid domain (`.cc` ≈ $8) | `workers.dev` now; `eu.org` free subdomain for email when a mail path is needed |
+| A paid API key for anything | The upstream is keyless; every other piece is a Cloudflare free tier |
+| A paid mailing service | A free SMTP relay, and manual sends until volume justifies more |
+| Paid monitoring | `/health` + the D1/KV state we already hold |
+
+**When the product earns money**, the order of spending is: (1) keep the read
+headroom, (2) a real domain, (3) paid distribution. Not before.
+
+**The consequence to accept:** the free tier's read ceiling is a real limit. The
+mitigation is the cache-first rule in section 4 of `docs/MASTER-PROMPT.md`, and
+the one-line guard that keeps `price_latest` from ever moving backwards in time.
+
+---
+
+## What the agent does next, in order
+
+1. **MCP Registry + Connectors Directory** — `server.json` and the guide are
+   ready; only the owner's GitHub step is missing.
+2. **Paid tier, first slice** — API key, rate limit, quota, usage view. Built on
+   the free tier; payment integration comes later.
+3. **B2B outreach** — 40–100 prospects, a personal Bangla email each. Blocked
+   only on an email-sending path.
+4. **Archive** — a daily snapshot of the pages and the data, so a crawler's
+   first visit is never an empty one.
+5. **Backfill** — left running, quota-capped; `get_price_trend` becomes a real
+   feature at 90 days.
+
+**The master prompt** for a top-tier model to take all of this over is in
+`docs/MASTER-PROMPT.md` — it is self-contained, carries the ten inviolable
+rules, and names the owner's four jobs.
