@@ -24,7 +24,7 @@
  */
 
 import { formatBdt, toBanglaDigits } from "./normalize";
-import { LOGO_SVG } from "./brand";
+import { LOGO_SVG, ledgerFigure } from "./brand";
 import type { PriceRowOut } from "./db";
 
 export interface RenderContext {
@@ -68,12 +68,13 @@ const CSS = `
   --shell:1180px;
 }
 *{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;scrollbar-gutter:stable}
 body{
   margin:0;background:var(--paper);color:var(--ink);
   font-family:var(--font-body);font-size:17px;line-height:1.7;
   font-weight:380;
   -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
 }
 a{color:var(--indigo);text-decoration:none;border-bottom:1px solid transparent}
 a:hover{border-bottom-color:currentColor}
@@ -84,36 +85,39 @@ code,kbd{font-family:var(--font-mono);font-size:.86em}
 
 /* ── masthead ─────────────────────────────────────────────────────────── */
 .masthead{
-  position:sticky;top:0;z-index:50;background:rgba(238,241,247,.92);
+  position:sticky;top:0;z-index:50;background:rgba(238,241,247,.93);
   backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--rule);
 }
-.masthead-in{display:flex;align-items:center;gap:26px;height:62px}
-.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-family:var(--font-display);font-size:20px;border:0}
+.masthead-in{display:flex;align-items:center;gap:22px;height:52px}
+.brand{display:flex;align-items:center;gap:8px;color:var(--ink);font-family:var(--font-display);font-size:19px;border:0;white-space:nowrap}
 .brand:hover{border:0}
-.brand-mark{display:block;width:28px;height:28px;flex:0 0 28px}
+.brand-mark{display:block;width:24px;height:24px;flex:0 0 24px}
 .brand-mark svg{display:block;width:100%;height:100%}
-.brand-sub{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);border-left:1px solid var(--rule);padding-left:9px;margin-left:2px}
-.nav{display:flex;gap:22px;margin-left:auto;align-items:center}
-.nav a{color:var(--ink-2);font-size:15px;font-weight:450;border:0;padding:4px 0}
+.brand-sub{font-family:var(--font-mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);border-left:1px solid var(--rule);padding-left:8px;margin-left:1px;white-space:nowrap}
+.nav{display:flex;gap:18px;margin-left:auto;align-items:center;flex-wrap:nowrap;min-width:0}
+.nav a{color:var(--ink-2);font-size:14.5px;font-weight:450;border:0;padding:3px 0;white-space:nowrap}
 .nav a:hover{color:var(--red);border:0}
 .nav-cta{
-  font-family:var(--font-mono);font-size:12px;letter-spacing:.04em;
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.06em;
   border:1px solid var(--ink);background:var(--ink);color:var(--paper-2);
-  padding:7px 13px;border-radius:var(--r);border-bottom:1px solid var(--ink);
+  padding:6px 11px;border-radius:var(--r);border-bottom:1px solid var(--ink);white-space:nowrap;
 }
 .nav-cta:hover{background:var(--indigo);border-color:var(--indigo);color:#fff}
 
 /* ── hero ─────────────────────────────────────────────────────────────── */
-.hero{padding:62px 0 40px;border-bottom:1px solid var(--rule)}
+.hero{padding:40px 0 32px;border-bottom:1px solid var(--rule)}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1fr) 296px;gap:40px;align-items:start}
 .eyebrow{
-  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;
-  color:var(--muted);display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:20px;
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px;
 }
-.eyebrow .dot{width:5px;height:5px;background:var(--red);border-radius:50%}
-.hero h1{font-size:clamp(42px,7.4vw,78px);line-height:1.03;letter-spacing:-.025em}
+.eyebrow .dot{width:5px;height:5px;background:var(--red);border-radius:50%;flex:0 0 5px}
+.hero h1{font-size:clamp(36px,5.2vw,60px);line-height:1.06;letter-spacing:-.025em}
 .hero h1 em{font-style:normal;color:var(--red)}
-.lead{font-size:19px;line-height:1.62;color:var(--ink-2);max-width:60ch;margin:20px 0 0;font-weight:360}
+.lead{font-size:18px;line-height:1.58;color:var(--ink-2);max-width:56ch;margin:16px 0 0;font-weight:360}
 .lead b{font-weight:600;color:var(--ink)}
+.ledger-figure{width:100%;height:auto;display:block;margin-top:6px}
+.figure-cap{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:center;margin-top:10px}
 
 /* ── the search module (the hero thesis) ──────────────────────────────── */
 .lookup{
@@ -281,6 +285,8 @@ footer{border-top:2px solid var(--ink);margin-top:20px;background:var(--paper-2)
 .callout b{color:var(--ink)}
 
 @media (max-width:900px){
+  .hero-grid{grid-template-columns:1fr;gap:26px}
+  .ledger-figure{max-width:296px;margin:0 auto}
   .stats{grid-template-columns:repeat(2,1fr)}
   .stat:nth-child(2n){border-right:0}
   .stat:nth-child(-n+2){border-bottom:1px solid var(--rule-soft)}
@@ -288,14 +294,14 @@ footer{border-top:2px solid var(--ink);margin-top:20px;background:var(--paper-2)
   .steps{grid-template-columns:1fr 1fr}
   .step{border-bottom:1px solid var(--rule-soft)}
   .foot-grid{grid-template-columns:1fr 1fr}
+  .brand-sub{display:none}
 }
 @media (max-width:620px){
   body{font-size:16px}
   .shell{padding:0 16px}
-  .nav{gap:14px}
+  .nav{gap:13px}
   .nav a:not(.nav-cta){display:none}
-  .brand-sub{display:none}
-  .hero{padding:38px 0 30px}
+  .hero{padding:30px 0 24px}
   .steps{grid-template-columns:1fr}
   .foot-grid{grid-template-columns:1fr}
   .lookup-form button{margin-left:0;margin-top:8px;width:100%}
@@ -520,22 +526,37 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
     })
     .join("\n");
 
+  const figureRows = d.ledger.slice(0, 3).map((r) => ({
+    name: r.commodityBn,
+    place: r.districtBn,
+    value: formatBdt(r.retail?.avg),
+    fresh: !r.carriedForward,
+  }));
+
   const body = `<section class="hero">
   <div class="shell">
-    <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
-    <h1>আজকের <em>বাজারদর</em></h1>
-    <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commodityCount}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
+        <h1>আজকের <em>বাজারদর</em></h1>
+        <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commodityCount}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
 
-    <div class="lookup">
-      <div class="lookup-label">আজ কত টাকা?</div>
-      <form class="lookup-form" id="lookup" role="search" autocomplete="off">
-        <input id="q" name="q" type="search" placeholder="পণ্য ও জেলা — যেমন: পেঁয়াজ ঢাকা" aria-label="পণ্য ও জেলা">
-        <button type="submit">খুঁজুন</button>
-      </form>
-      <div class="lookup-answer" id="answer" aria-live="polite"></div>
+        <div class="lookup">
+          <div class="lookup-label">আজ কত টাকা?</div>
+          <form class="lookup-form" id="lookup" role="search" autocomplete="off">
+            <input id="q" name="q" type="search" placeholder="পণ্য ও জেলা — যেমন: পেঁয়াজ ঢাকা" aria-label="পণ্য ও জেলা">
+            <button type="submit">খুঁজুন</button>
+          </form>
+          <div class="lookup-answer" id="answer" aria-live="polite"></div>
+        </div>
+
+        <div class="chips">${chips}</div>
+      </div>
+      <div>
+        ${ledgerFigure(figureRows)}
+        <div class="figure-cap">আজকের খাতা · একটি পাতা</div>
+      </div>
     </div>
-
-    <div class="chips">${chips}</div>
 
     <div class="stats">
       <div class="stat"><div class="n">${d.districtCount}<small>টি</small></div><div class="l">জেলা</div></div>
