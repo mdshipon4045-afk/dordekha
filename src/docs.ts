@@ -294,26 +294,26 @@ export function datasetDoc(stats: DatasetStats, ctx: RenderContext): Doc {
         rows: [
           [
             "পণ্য",
-            String(stats.commodities),
-            `ক্যাটালগে ${stats.commodities}টি; এর মধ্যে ${stats.commoditiesWithData}টির তথ্য প্রকাশিত`,
+            bnNum(stats.commodities),
+            `ক্যাটালগে ${bnNum(stats.commodities)}টি; এর মধ্যে ${bnNum(stats.commoditiesWithData)}টির তথ্য প্রকাশিত`,
           ],
           [
             "জেলা",
-            String(stats.districts),
-            `এর মধ্যে ${stats.districtsWithData}টি জেলা ${stats.latestDate ?? "সর্বশেষ দিনে"} জমা দিয়েছে`,
+            bnNum(stats.districts),
+            `এর মধ্যে ${bnNum(stats.districtsWithData)}টি জেলা ${stats.latestDate ?? "সর্বশেষ দিনে"} জমা দিয়েছে`,
           ],
           [
             "উপজেলা",
-            String(stats.upazilas),
+            bnNum(stats.upazilas),
             stats.upazilas > 0
               ? "উপজেলা-ভিত্তিক তথ্য প্রকাশ করা হচ্ছে"
               : "উপজেলা-ভিত্তিক তথ্য এখনো প্রকাশ করা হয়নি",
           ],
-          ["প্রতিবেদনের দিন", String(stats.days), "আর্কাইভ"],
-          ["মোট সারি", stats.rows.toLocaleString("en-US"), "খুচরা ও পাইকারি"],
+          ["প্রতিবেদনের দিন", bnNum(stats.days), "আর্কাইভ"],
+          ["মোট সারি", bnNum(stats.rows), "খুচরা ও পাইকারি"],
           [
             "পূর্বের মান",
-            stats.carriedPct === null ? "—" : `${stats.carriedPct}%`,
+            stats.carriedPct === null ? "—" : `${bnNum(stats.carriedPct)}%`,
             `সর্বশেষ দিনের (${stats.latestDate ?? "—"}) সারিগুলোর মধ্যে যেগুলো আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে`,
           ],
         ],
@@ -364,7 +364,7 @@ export function methodologyDoc(stats: DatasetStats, ctx: RenderContext): Doc {
   const carried =
     stats.carriedPct === null
       ? "হিসাব করা যায়নি"
-      : `সর্বশেষ দিনের (${stats.latestDate ?? "—"}) মোট ${stats.rows.toLocaleString("en-US")} সারির মধ্যে ${stats.carriedPct}% আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে`;
+      : `সর্বশেষ দিনের (${stats.latestDate ?? "—"}) মোট ${bnNum(stats.rows)} সারির মধ্যে ${bnNum(stats.carriedPct)}% আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে`;
 
   const unitRows = stats.units.map((u) => [String(u.id), u.name_bn, u.name_en]);
 

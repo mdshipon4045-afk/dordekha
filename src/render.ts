@@ -23,7 +23,7 @@
  * question, and the first paragraph must contain the numbers.
  */
 
-import { formatBdt, toBanglaDigits } from "./normalize";
+import { formatBdt, formatCount, toBanglaDigits } from "./normalize";
 import { LOGO_SVG, ledgerFigure } from "./brand";
 import type { PriceRowOut } from "./db";
 
@@ -614,10 +614,10 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
     </div>
 
     <div class="stats">
-      <div class="stat"><div class="n">${d.districtCount}<small>টি</small></div><div class="l">জেলা</div></div>
-      <div class="stat"><div class="n">${d.commoditiesWithData}<small>টি</small></div><div class="l">পণ্যে তথ্য (ক্যাটালগে ${d.commodityCount})</div></div>
-      <div class="stat"><div class="n">${d.dayCount}<small> দিন</small></div><div class="l">আর্কাইভ</div></div>
-      <div class="stat"><div class="n">${d.rowCount.toLocaleString("en-US")}</div><div class="l">তথ্যের সারি</div></div>
+      <div class="stat"><div class="n">${formatCount(d.districtCount)}<small>টি</small></div><div class="l">জেলা</div></div>
+      <div class="stat"><div class="n">${formatCount(d.commoditiesWithData)}<small>টি</small></div><div class="l">পণ্যে তথ্য (ক্যাটালগে ${formatCount(d.commodityCount)})</div></div>
+      <div class="stat"><div class="n">${formatCount(d.dayCount)}<small> দিন</small></div><div class="l">আর্কাইভ</div></div>
+      <div class="stat"><div class="n">${formatCount(d.rowCount)}</div><div class="l">তথ্যের সারি</div></div>
     </div>
   </div>
 </section>

@@ -3,6 +3,10 @@
 const B = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
 const cp = (n) => String.fromCodePoint(n);
 const norm = (s) => String(s).split(cp(0x09af) + cp(0x09bc)).join(cp(0x09df));
+// The site writes numbers in Bangla digits, so the harness has to read them
+// the same way. An ASCII-only pattern would silently match nothing.
+const bnDigits = (s) =>
+  String(s).replace(/[০-৯]/g, (d) => String("০১২৩৪৫৬৭৮৯".indexOf(d)));
 const Q = (s) => encodeURIComponent(s);
 
 const results = [];
@@ -107,8 +111,8 @@ console.log(`\nVerifying the audit findings against ${B}\n`);
   const method = await get("/methodology");
   // The pattern is written without any nukta, because the haystack has been
   // folded to the precomposed form and the pattern has not.
-  const h = norm(home.text).match(/([\d.]+)%<\/strong>\s*সারি আগের/);
-  const m = norm(method.text).match(/([\d.]+)%\s*আগের দিনের মান/);
+  const h = bnDigits(norm(home.text)).match(/([\d.]+)%<\/strong>\s*সারি আগের/);
+  const m = bnDigits(norm(method.text)).match(/([\d.]+)%\s*আগের দিনের মান/);
   check(
     "তাৎ-৫",
     "the home page and the methodology page quote the same carried-forward rate",

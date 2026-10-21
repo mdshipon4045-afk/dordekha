@@ -117,6 +117,22 @@ Registry-তে প্রকাশের নির্দেশনা: [`docs/PUB
 
 ---
 
+## 📚 ডকুমেন্ট
+
+| ফাইল | কী |
+|---|---|
+| [`PLAN.md`](PLAN.md) | সিদ্ধান্ত, পরিকল্পনা, ফেজ, মানবিক কাজের তালিকা |
+| [`docs/FAILURE-MODES.md`](docs/FAILURE-MODES.md) | **ফেইলার রেজিস্টার + বর্তমান অবস্থা** — কোড থেকে শুরু করলে এখানেই যান |
+| [`docs/MASTER-PROMPT.md`](docs/MASTER-PROMPT.md) | একটি শীর্ষস্তর AI-কে পুরো প্রজেক্ট চালানোর দায়িত্ব দেওয়ার প্রম্পট |
+| [`docs/DEEP-REVIEW-PROMPT.md`](docs/DEEP-REVIEW-PROMPT.md) | গভীর কোড + ব্যবসা + আইনি পর্যালোচনার প্রম্পট |
+| [`docs/AUDIT-PROMPTS.md`](docs/AUDIT-PROMPTS.md) | চারটি অডিট প্রম্পট (২১ অক্টোবরে চালানো হয়েছে) |
+| [`docs/DATASET.md`](docs/DATASET.md) | ডেটাসেটের পরিধি ও পদ্ধতি |
+| [`docs/licence-letter-DAM.md`](docs/licence-letter-DAM.md) | DAM/ডিসিম লাইসেন্স চিঠির খসড়া |
+| [`docs/OUTREACH-KIT.md`](docs/OUTREACH-KIT.md) | B2B আউটরেচ: প্রোসপেক্ট, ইমেইল টেমপ্লেট, ফেসবুক পোস্ট |
+| [`docs/PUBLISH-MCP.md`](docs/PUBLISH-MCP.md) | MCP Registry-তে প্রকাশের নির্দেশনা |
+
+---
+
 ## যাচাই
 
 ```bash

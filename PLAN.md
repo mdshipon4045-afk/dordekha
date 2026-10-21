@@ -4,6 +4,14 @@
 > Owner: AI agent (build + operate). Human needed only for: account creation/login, payment
 > confirmation, one weekly Facebook-group post, and signing the data-licence letter.
 
+> **⚡ এখান থেকে চালিয়ে যান:** `docs/FAILURE-MODES.md` — সেখানে ফেইলার রেজিস্টার,
+> বর্তমান অবস্থা, সিদ্ধান্তগুলোর কারণ, জরুরি ক্রাইসিস কার্ড ও কমান্ডগুলো আছে।
+> **সেশনের কনটেক্স্ট ভরলেও ওই ফাইল থেকে সব ধরা যাবে।**
+>
+> **⚡ দুটো আলাদা AI-কে দেওয়ার জন্য:** `docs/MASTER-PROMPT.md` (পুরো প্রজেক্ট
+> চালানোর জন্য) · `docs/DEEP-REVIEW-PROMPT.md` (গভীর পর্যালোচনার জন্য) ·
+> `docs/AUDIT-PROMPTS.md` (অডিটের জন্য)
+
 ## Status legend
 `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked (needs human) · `[-]` dropped (with reason)
 

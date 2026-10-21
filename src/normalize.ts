@@ -183,3 +183,16 @@ export function formatBdt(n: number | null | undefined, fractionDigits = 2): str
 export function toBanglaDigits(input: string): string {
   return input.replace(/\d/g, (d) => BANGLA_DIGITS[Number(d)] ?? d);
 }
+
+/**
+ * A plain number in Bangla digits, with thousands grouped.
+ *
+ * Counts, dates and totals are read by people, not by parsers, so they are
+ * written the way Bangla is written. A page that mixes "৪৩–৪৭" in one table
+ * and "11364" in another looks like two different products.
+ */
+export function formatCount(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  const grouped = String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return toBanglaDigits(grouped);
+}

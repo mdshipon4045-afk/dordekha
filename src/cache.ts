@@ -18,7 +18,11 @@
 import type { Env } from "./types";
 
 const SNAPSHOT_KEY = "snapshot:latest";
-const AGGREGATE_TTL = 60 * 60; // an hour is plenty for daily aggregates
+// The data changes once a day, and the ingest refreshes the aggregates when
+// it does. A long life here means few cache writes — the free tier allows a
+// thousand writes a day — while a short one would mean recomputing on a
+// timer for no benefit.
+const AGGREGATE_TTL = 6 * 60 * 60;
 const SNAPSHOT_TTL = 60 * 60 * 24 * 2;
 
 export interface SnapshotRow {
@@ -118,7 +122,78 @@ const EMPTY_AGGREGATES: Aggregates = {
   busiestDistrictName: "ঢাকা",
 };
 
-async function computeAggregates(env: Env): Promise<Aggregates | null> {
+/**
+ * The aggregates, computed from the cache.
+ *
+ * This is the path that has to work, because it is the one that is free.
+ * Computing them from the database meant a COUNT(*) over the whole price
+ * table every hour — 700,000 rows twenty-four times a day once the backfill
+ * finishes, which is more than three times the daily read budget. And when
+ * the read budget was already spent, the database path failed and every
+ * published statistic fell to zero: the site claimed "0 districts" and
+ * "no dates yet" while the data was sitting right there in the cache.
+ *
+ * The cache holds the same information: the snapshot has the current rows
+ * and their dates, the history snapshot has every date held, and the master
+ * snapshot has the reference lists.
+ */
+async function computeAggregatesFromCache(env: Env): Promise<Aggregates | null> {
+  const [snap, hist, master] = await Promise.all([
+    getSnapshot(env),
+    getHistorySnapshot(env),
+    getMasterSnapshot(env),
+  ]);
+  if (!snap || snap.rows.length === 0) return null;
+
+  const rows = snap.rows;
+  const history = hist?.rows ?? [];
+
+  const dates = new Set<string>();
+  for (const r of history) dates.add(r.t);
+  for (const r of rows) dates.add(r.t);
+  const sortedDates = [...dates].sort();
+  const latest = sortedDates[sortedDates.length - 1] ?? null;
+  const first = sortedDates[0] ?? null;
+
+  const latestRows = rows.filter((r) => r.t === latest);
+  const carried = latestRows.filter((r) => r.cf === 1).length;
+
+  const byDistrict = new Map<number, number>();
+  for (const r of latestRows) byDistrict.set(r.d, (byDistrict.get(r.d) ?? 0) + 1);
+  let busiestId = 47;
+  let busiestCount = -1;
+  for (const [id, n] of byDistrict) {
+    if (n > busiestCount) {
+      busiestCount = n;
+      busiestId = id;
+    }
+  }
+  const busiestName = master?.districts.find((d) => d.id === busiestId)?.nameBn ?? "ঢাকা";
+
+  return {
+    latestDate: latest,
+    firstDate: first,
+    days: sortedDates.length,
+    rowCount: history.length > 0 ? history.length : rows.length,
+    commodityCount: master?.commodities.length ?? 0,
+    districtCount: master?.districts.length ?? 0,
+    commoditiesWithData: new Set(latestRows.map((r) => r.c)).size,
+    districtsWithData: byDistrict.size,
+    upazilaCount: 0,
+    carriedPct:
+      latestRows.length > 0 ? Math.round((carried / latestRows.length) * 1000) / 10 : null,
+    busiestDistrictId: busiestId,
+    busiestDistrictName: busiestName,
+  };
+}
+
+/**
+ * The aggregates, computed from the database.
+ *
+ * Only used when the cache is empty. This path scans the price table, so
+ * it is never reached while the cache is warm.
+ */
+async function computeAggregatesFromDb(env: Env): Promise<Aggregates | null> {
   try {
     const [span, counts, busy] = await Promise.all([
       env.DB
@@ -190,6 +265,13 @@ async function computeAggregates(env: Env): Promise<Aggregates | null> {
   } catch {
     return null;
   }
+}
+
+async function computeAggregates(env: Env): Promise<Aggregates | null> {
+  // The cache first: it is free, it is instant, and it cannot run out.
+  const fromCache = await computeAggregatesFromCache(env);
+  if (fromCache) return fromCache;
+  return computeAggregatesFromDb(env);
 }
 
 /** Refresh the cached aggregates. Called after an ingest. */
