@@ -121,4 +121,11 @@ export interface Env {
   TELEGRAM_CHANNEL?: string;
   /** bKash wallet number used to collect payments. */
   BKASH_NUMBER?: string;
+  /**
+   * Set to "1" once the data licence from DAM/ডিসিম has been signed.
+   *
+   * Until then a paid API key cannot be created, because the licence is
+   * the legal permission to sell the service and it does not exist yet.
+   */
+  LICENCE_GRANTED?: string;
 }

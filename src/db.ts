@@ -145,7 +145,7 @@ export async function commodityRefs(env: Env): Promise<CommodityRef[]> {
     const { results } = await env.DB
       .prepare(
         `SELECT c.id, c.name_bn, c.name_en, c.group_id, g.name_bn AS group_bn,
-                c.unit_retail, c.unit_whole_sale
+                c.unit_retail, c.unit_wholesale
            FROM commodity c LEFT JOIN commodity_group g ON g.id = c.group_id
           ORDER BY c.id`,
       )
@@ -159,7 +159,7 @@ export async function commodityRefs(env: Env): Promise<CommodityRef[]> {
         groupId: Number(row.group_id ?? 0),
         groupBn: String(row.group_bn ?? ""),
         unitRetail: row.unit_retail === null ? null : Number(row.unit_retail),
-        unitWholesale: row.unit_whole_sale === null ? null : Number(row.unit_whole_sale),
+        unitWholesale: row.unit_wholesale === null ? null : Number(row.unit_wholesale),
       };
     });
   } catch (err) {

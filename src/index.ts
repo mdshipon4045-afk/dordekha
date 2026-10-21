@@ -38,7 +38,18 @@ import { formatBdt } from "./normalize";
 import { extractKeywords, foldForCompare } from "./bn";
 import { candidatesFor, pickByCoverage, resolve } from "./resolve";
 import { refreshMaster, startIngest, stepIngest, buildDigestInput, cronTick } from "./ingest";
-import { ensureIndexes, maintenanceState } from "./maintenance";
+import { ensureSchema, maintenanceState } from "./maintenance";
+import {
+  currentPeriod,
+  disableLicense,
+  enforceAccess,
+  issueLicense,
+  keyFromRequest,
+  listLicenses,
+  planLimits,
+  verifyLicense,
+  LicenceError,
+} from "./keys";
 import {
   esc,
   factUrl,
@@ -184,6 +195,17 @@ export default {
             405,
           );
         }
+        const access = await enforceAccess(env, request, "/mcp", "mcp");
+        if (!access.ok) {
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32001, message: access.reason ?? "Forbidden" },
+            }),
+            { status: access.status, headers: { "content-type": "application/json" } },
+          );
+        }
         const body = (await request.json()) as {
           jsonrpc: "2.0";
           id?: string | number | null;
@@ -239,8 +261,40 @@ export default {
           );
         }
         if (path === "/internal/maintenance") {
-          const result = await ensureIndexes(env);
+          const result = await ensureSchema(env);
           return json(result, ctxR);
+        }
+        if (path === "/internal/license/create" && request.method === "POST") {
+          try {
+            const body = (await request.json()) as {
+              plan?: string;
+              label?: string;
+              contact?: string;
+              months?: number;
+            };
+            const issued = await issueLicense(env, {
+              plan: body.plan ?? "free",
+              label: body.label,
+              contact: body.contact,
+              months: body.months,
+            });
+            // The raw key is in this response and nowhere else. It is shown
+            // once, because only its hash is stored.
+            return json(issued, ctxR);
+          } catch (err) {
+            if (err instanceof LicenceError) {
+              return json({ error: err.message }, ctxR, err.status);
+            }
+            throw err;
+          }
+        }
+        if (path === "/internal/license/list") {
+          return json({ licenses: await listLicenses(env) }, ctxR);
+        }
+        if (path === "/internal/license/disable" && request.method === "POST") {
+          const body = (await request.json()) as { id?: string };
+          if (!body.id) return json({ error: "id is required" }, ctxR, 400);
+          return json({ disabled: await disableLicense(env, body.id) }, ctxR);
         }
         if (path === "/internal/snapshot") {
           // Write the current prices and the daily aggregates to KV, so the
@@ -325,7 +379,14 @@ export default {
       if (path === "/openapi.json") return openApi(env, ctxR);
 
       // ── API ────────────────────────────────────────────────────────────
-      if (path.startsWith("/api/")) return apiRoutes(env, ctxR, url);
+      if (path === "/api/v1/account") return accountRoute(env, ctxR, request);
+      if (path.startsWith("/api/")) {
+        const access = await enforceAccess(env, request, path, "api");
+        if (!access.ok) {
+          return json({ error: access.reason ?? "Forbidden", status: access.status }, ctxR, access.status);
+        }
+        return apiRoutes(env, ctxR, url);
+      }
 
       // ── Pages ──────────────────────────────────────────────────────────
       if (path === "/") return homePage(env, ctxR, fmt, aggregates);
@@ -377,7 +438,7 @@ export default {
       ctx.waitUntil(
         (async () => {
           try {
-            const result = await ensureIndexes(env);
+            const result = await ensureSchema(env);
             if (result.created.length > 0) console.log(`maintenance: created ${result.created.join(", ")}`);
             if (result.failed.length > 0) console.error(`maintenance: failed ${result.failed.join("; ")}`);
           } catch (err) {
@@ -777,6 +838,42 @@ async function resolveDistrictParam(
 /** The English name of a unit id, for the unit legend. */
 function unitNameEn(id: number): string {
   return allUnits().find((u) => u.id === id)?.en ?? "kg";
+}
+
+/**
+ * The key holder's own view: which plan, how much has been used, until when.
+ *
+ * The key is never echoed back — only its hash is stored, so there is
+ * nothing to echo.
+ */
+async function accountRoute(env: Env, ctx: RenderContext, request: Request): Promise<Response> {
+  const key = keyFromRequest(request);
+  if (!key) {
+    return json({ error: "একটি API key দিন (X-API-Key বা Authorization: Bearer)।" }, ctx, 401);
+  }
+  const licence = await verifyLicense(env, key);
+  if (!licence) return json({ error: "API key চেনা যায়নি।" }, ctx, 401);
+
+  const limits = planLimits(licence.plan);
+  const period = currentPeriod();
+  const used = licence.period === period ? licence.callsUsed : 0;
+  return json(
+    {
+      id: licence.id,
+      plan: licence.plan,
+      label: licence.label,
+      contact: licence.contact,
+      created_at: licence.createdAt,
+      expires_at: licence.expiresAt,
+      active: licence.active,
+      period,
+      calls_used: used,
+      calls_limit: licence.callsLimit,
+      burst_limit: limits.burstLimit,
+      commercial_use: licence.plan !== "free",
+    },
+    ctx,
+  );
 }
 
 async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Response> {

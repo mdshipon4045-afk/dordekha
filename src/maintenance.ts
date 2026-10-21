@@ -52,7 +52,24 @@ export const REQUIRED_INDEXES: RequiredIndex[] = [
   },
 ];
 
-const STATE_KEY = "maintenance:indexes";
+const STATE_KEY = "maintenance:schema";
+
+export interface RequiredColumn {
+  table: string;
+  name: string;
+  sql: string;
+}
+
+/**
+ * The columns the quota machinery needs.
+ *
+ * `license.period` is the calendar month the counter belongs to, so the
+ * allowance can roll over without a scheduled job. SQLite cannot add a
+ * column conditionally, so the check is done here instead.
+ */
+export const REQUIRED_COLUMNS: RequiredColumn[] = [
+  { table: "license", name: "period", sql: "ALTER TABLE license ADD COLUMN period TEXT" },
+];
 
 export interface MaintenanceResult {
   at: string;
@@ -60,18 +77,20 @@ export interface MaintenanceResult {
   created: string[];
   /** Indexes that were already there. */
   present: string[];
-  /** Indexes that could not be created, with the reason. */
+  /** Columns this run added. */
+  columnsAdded: string[];
+  /** Indexes or columns that could not be created, with the reason. */
   failed: string[];
 }
 
 /**
- * Make sure the required indexes exist.
+ * Make sure the schema the code depends on is actually there.
  *
  * The check reads a handful of rows from the schema catalogue, which is
  * the cheapest query in the database. The creates are idempotent, so a
  * second run costs the same and changes nothing.
  */
-export async function ensureIndexes(env: Env): Promise<MaintenanceResult> {
+export async function ensureSchema(env: Env): Promise<MaintenanceResult> {
   const names = REQUIRED_INDEXES.map((i) => i.name);
   const placeholders = names.map(() => "?").join(",");
   const existing = new Set<string>();
@@ -89,6 +108,7 @@ export async function ensureIndexes(env: Env): Promise<MaintenanceResult> {
 
   const created: string[] = [];
   const present: string[] = [];
+  const columnsAdded: string[] = [];
   const failed: string[] = [];
 
   for (const index of REQUIRED_INDEXES) {
@@ -104,7 +124,21 @@ export async function ensureIndexes(env: Env): Promise<MaintenanceResult> {
     }
   }
 
-  const result: MaintenanceResult = { at: new Date().toISOString(), created, present, failed };
+  for (const column of REQUIRED_COLUMNS) {
+    try {
+      const { results } = await env.DB
+        .prepare(`PRAGMA table_info(${column.table})`)
+        .all<{ name: string }>();
+      const presentColumns = new Set((results ?? []).map((r) => String(r.name)));
+      if (presentColumns.has(column.name)) continue;
+      await env.DB.prepare(column.sql).run();
+      columnsAdded.push(`${column.table}.${column.name}`);
+    } catch (err) {
+      failed.push(`${column.table}.${column.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const result: MaintenanceResult = { at: new Date().toISOString(), created, present, columnsAdded, failed };
   try {
     await env.CACHE.put(STATE_KEY, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 30 });
   } catch {

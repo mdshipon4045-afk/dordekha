@@ -15,7 +15,7 @@
  *    it. The site degrades to slightly stale data instead of to nothing.
  */
 
-import type { Env } from "./types";
+import type { Env, MasterData } from "./types";
 
 const SNAPSHOT_KEY = "snapshot:latest";
 // The data changes once a day, and the ingest refreshes the aggregates when
@@ -338,6 +338,36 @@ export async function getMasterSnapshot(env: Env): Promise<MasterSnapshot | null
 
 export async function setMasterSnapshot(env: Env, m: MasterSnapshot): Promise<void> {
   await kvSet(env, MASTER_KEY, m, SNAPSHOT_TTL);
+}
+
+/**
+ * The cacheable form of the master data.
+ *
+ * The snapshot is what the read paths use, so it has to carry the same
+ * facts as the database: the group's own name and the wholesale unit are
+ * part of the master data, and dropping them is how the site came to
+ * publish an empty group and a null wholesale unit for every commodity.
+ */
+export function toMasterSnapshot(master: MasterData): MasterSnapshot {
+  const groupNames = new Map(master.groups.map((g) => [g.id, g.nameBn]));
+  return {
+    at: master.fetchedAt,
+    commodities: master.commodities.map((c) => ({
+      id: c.id,
+      nameBn: c.nameBn,
+      nameEn: c.nameEn,
+      groupId: c.groupId,
+      groupBn: groupNames.get(c.groupId) ?? "",
+      unitRetail: c.unitRetail,
+      unitWholesale: c.unitWholesale,
+    })),
+    districts: master.districts.map((d) => ({ id: d.id, nameBn: d.nameBn, nameEn: d.nameEn })),
+    units: Object.entries(master.units).map(([id, u]) => ({
+      id: Number(id),
+      nameBn: u.bn,
+      nameEn: u.en,
+    })),
+  };
 }
 
 /** A row of the price history, in the compact snapshot form. */

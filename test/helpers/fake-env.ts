@@ -15,6 +15,8 @@ export interface RecordedStatement {
 export interface FakeD1 {
   db: D1Database;
   statements: RecordedStatement[];
+  /** The values bound to each statement, in the order they were given. */
+  bound: unknown[][];
   /** Every SELECT statement that names the given table. */
   readsOf(table: string): string[];
   /** Every statement, read or write, that names the given table. */
@@ -30,6 +32,7 @@ export type Responder = (sql: string) => { results: unknown[] } | null;
  */
 export function fakeD1(responders: Responder[] = []): FakeD1 {
   const statements: RecordedStatement[] = [];
+  const bound: unknown[][] = [];
 
   function rowsFor(sql: string): { results: unknown[] } {
     for (const responder of responders) {
@@ -42,7 +45,7 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
   const db = {
     prepare(sql: string) {
       const trimmed = sql.trim();
-      const kind: "read" | "write" = /^select/i.test(trimmed) ? "read" : "write";
+      const kind: "read" | "write" = /^(select|pragma|with)/i.test(trimmed) ? "read" : "write";
       statements.push({ sql: trimmed, kind });
       const run = async () => {
         const { results } = rowsFor(trimmed);
@@ -50,21 +53,24 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
       };
       return {
         sql: trimmed,
-        bind: (..._args: unknown[]) => ({
-          first: async <T>() => {
-            const { results } = rowsFor(trimmed);
-            return (results[0] ?? null) as T | null;
-          },
-          all: async <T>() => {
-            const { results } = rowsFor(trimmed);
-            return { results: results as T[], success: true, meta: {} };
-          },
-          run: async () => {
-            const { results } = rowsFor(trimmed);
-            return { results, success: true, meta: { changes: results.length } };
-          },
-          raw: async () => new ArrayBuffer(0),
-        }),
+        bind: (...args: unknown[]) => {
+          bound.push(args);
+          return {
+            first: async <T>() => {
+              const { results } = rowsFor(trimmed);
+              return (results[0] ?? null) as T | null;
+            },
+            all: async <T>() => {
+              const { results } = rowsFor(trimmed);
+              return { results: results as T[], success: true, meta: {} };
+            },
+            run: async () => {
+              const { results } = rowsFor(trimmed);
+              return { results, success: true, meta: { changes: results.length } };
+            },
+            raw: async () => new ArrayBuffer(0),
+          };
+        },
         first: async <T>() => {
           const { results } = rowsFor(trimmed);
           return (results[0] ?? null) as T | null;
@@ -94,6 +100,7 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
   return {
     db,
     statements,
+    bound,
     readsOf(table: string) {
       const needle = table.toLowerCase();
       return statements.filter((s) => s.kind === "read" && s.sql.toLowerCase().includes(needle)).map((s) => s.sql);

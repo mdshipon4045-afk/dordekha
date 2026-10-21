@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { REQUIRED_INDEXES, ensureIndexes } from "../src/maintenance";
+import { REQUIRED_INDEXES, ensureSchema } from "../src/maintenance";
 import type { Env } from "../src/types";
 import { fakeD1, fakeKV } from "./helpers/fake-env";
 
@@ -24,7 +24,7 @@ describe("the worker keeps its own indexes", () => {
     const kv = fakeKV();
     const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
 
-    const result = await ensureIndexes(env);
+    const result = await ensureSchema(env);
 
     expect(result.failed).toEqual([]);
     expect(result.created.length).toBe(REQUIRED_INDEXES.length);
@@ -39,11 +39,12 @@ describe("the worker keeps its own indexes", () => {
         sql.includes("sqlite_master")
           ? { results: REQUIRED_INDEXES.map((i) => ({ name: i.name })) }
           : null,
+      (sql) => (sql.includes("table_info") ? { results: [{ name: "period" }] } : null),
     ]);
     const kv = fakeKV();
     const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
 
-    const result = await ensureIndexes(env);
+    const result = await ensureSchema(env);
 
     expect(result.created).toEqual([]);
     expect(result.failed).toEqual([]);
@@ -84,7 +85,7 @@ describe("the worker keeps its own indexes", () => {
     const kv = fakeKV();
     const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
 
-    const result = await ensureIndexes(env);
+    const result = await ensureSchema(env);
 
     expect(seen).toBeGreaterThan(0);
     expect(result.created).toEqual([]);
@@ -98,13 +99,43 @@ describe("the worker keeps its own indexes", () => {
     const kv = fakeKV();
     const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
 
-    await ensureIndexes(env);
+    await ensureSchema(env);
 
-    const raw = kv.get("maintenance:indexes");
+    const raw = kv.get("maintenance:schema");
     expect(raw).toBeTruthy();
     const state = JSON.parse(String(raw));
     expect(state.created.length).toBe(REQUIRED_INDEXES.length);
     expect(state.at).toBeTruthy();
+  });
+
+  it("adds the column the monthly quota needs when it is missing", async () => {
+    // The counter rolls over by month, so the licence row has to remember
+    // which month it belongs to.
+    const d1 = fakeD1([
+      (sql) => (sql.includes("table_info") ? { results: [] } : null),
+      (sql) => (sql.includes("sqlite_master") ? { results: [] } : null),
+    ]);
+    const kv = fakeKV();
+    const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
+
+    const result = await ensureSchema(env);
+
+    expect(result.columnsAdded).toContain("license.period");
+    expect(d1.allOf("ADD COLUMN").length).toBeGreaterThan(0);
+  });
+
+  it("leaves the column alone when it is already there", async () => {
+    const d1 = fakeD1([
+      (sql) => (sql.includes("table_info") ? { results: [{ name: "period" }] } : null),
+      (sql) => (sql.includes("sqlite_master") ? { results: [] } : null),
+    ]);
+    const kv = fakeKV();
+    const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
+
+    const result = await ensureSchema(env);
+
+    expect(result.columnsAdded).toEqual([]);
+    expect(d1.allOf("ADD COLUMN")).toEqual([]);
   });
 });
 

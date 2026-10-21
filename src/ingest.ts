@@ -37,7 +37,7 @@ import {
   upsertPrices,
   writeJob,
 } from "./db";
-import { getAggregates } from "./cache";
+import { getAggregates, setMasterSnapshot, toMasterSnapshot } from "./cache";
 import type { Env, MasterData, PriceRecord } from "./types";
 
 /**
@@ -619,6 +619,11 @@ export async function refreshMaster(env: Env): Promise<{ districts: number; upaz
   const master = await fetchMasterData({ baseUrl: env.SOURCE_API });
   await replaceMasterData(env.DB, master);
   await env.CACHE.put(MASTER_KEY, JSON.stringify(master), { expirationTtl: MASTER_TTL_SECONDS });
+  // The cached snapshot is what the read paths actually use. A refresh that
+  // updated only the database left the site publishing whatever the stale
+  // snapshot said — an empty group and a null wholesale unit for every
+  // commodity — while the database held the right values.
+  await setMasterSnapshot(env, toMasterSnapshot(master));
   return {
     districts: master.districts.length,
     upazilas: master.upazilas.length,
