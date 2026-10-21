@@ -342,6 +342,59 @@ export function renderVerifyHtml(
   });
 }
 
+/* ── "এই তারিখে তথ্য নেই" ───────────────────────────────────────────── */
+
+/**
+ * The page shown when a specific date was asked for and the source has
+ * nothing for it.
+ *
+ * This is the honest answer, and it is the whole point: the service does
+ * not fill the gap with a different day's figures. The dates that *are*
+ * available are listed, so a reader (or an assistant) can find the right
+ * one instead of guessing.
+ */
+export function renderNoDataHtml(
+  opts: {
+    commodity: string;
+    district: string;
+    date: string;
+    available: { date: string; url: string }[];
+    latest: string | null;
+  },
+  ctx: RenderContext,
+): string {
+  const body = band({
+    kicker: "তথ্য নেই",
+    title: `${opts.date} তারিখে কোনো তথ্য নেই`,
+    lead: `${opts.commodity} এর ${opts.district} জেলার ${opts.date} তারিখের প্রতিবেদন উৎসে নেই। কোনো অন্য তারিখের সংখ্যা এখানে বসানো হয়নি — ভুল তারিখে ভুল দাম দেওয়ার চেয়ে ফাঁকা থাকা ভালো।`,
+    inner: `${
+      opts.available.length
+        ? `<div class="sheet" style="margin-top:24px">
+        <div class="sheet-bar"><span>যেসব তারিখে তথ্য আছে</span><span>${opts.available.length}টি</span></div>
+        <table class="ledger">
+          <thead><tr><th>তারিখ</th><th>উদ্ধৃতি</th></tr></thead>
+          <tbody>${opts.available
+            .map(
+              (a) =>
+                `<tr><td class="c-item">${esc(a.date)}</td><td class="c-prov"><a href="${esc(a.url)}">পাতা দেখুন →</a></td></tr>`,
+            )
+            .join("\n")}</tbody>
+        </table>
+      </div>`
+        : `<div class="callout" style="margin-top:24px">এই পণ্য ও জেলার জন্য কোনো তারিখে তথ্য পাওয়া যায়নি।</div>`
+    }
+    <p style="margin-top:18px"><a class="btn" href="/price">সব পণ্য</a> <a class="btn" style="background:transparent;color:var(--ink);border-color:var(--rule)" href="/">হোমে ফিরুন</a></p>`,
+  });
+
+  return layoutPage({
+    title: `${opts.date} তারিখে তথ্য নেই — ${opts.commodity}, ${opts.district} — দরদেখা`,
+    description: `${opts.commodity} ${opts.district} ${opts.date} তারিখে সরকারি প্রতিবেদনে তথ্য নেই।`,
+    canonical: `${ctx.origin.replace(/\/$/, "")}/price`,
+    body,
+    ctx,
+  });
+}
+
 /* ── 404 ────────────────────────────────────────────────────────────────── */
 
 export function renderNotFoundHtml(ctx: RenderContext): string {

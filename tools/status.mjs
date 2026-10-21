@@ -19,13 +19,7 @@ function line(label, value, good) {
 console.log(`\nদরদেখা — লাইভ স্ট্যাটাস  (${BASE})\n`);
 
 const h = await j("/health");
-line("health", `status=${h.status} ok=${h.body.ok} latest=${h.body.latestDate} rows=${h.body.rowsToday}`, h.status === 200);
-if (h.body.lastRun) {
-  const lr = h.body.lastRun;
-  // A "running" row is the placeholder written when a job starts; what
-  // matters is that a completed sweep exists and the job is still moving.
-  line("last ingest run", `${lr.price_date} ${lr.scope} ${lr.status} (${lr.rows_written} rows)`, lr.status !== "failed");
-}
+line("health", `status=${h.status} ok=${h.body.ok} latest=${h.body.latest_date} rows=${h.body.rows}`, h.status === 200);
 
 const d = await j("/api/v1/districts");
 line("districts", d.body.count, d.body.count === 64);

@@ -28,16 +28,46 @@
 import { fetchMasterData, fetchDailyPrices, fetchNationalScroll } from "./moa";
 import { normalizeBatch, type RawUpstreamRow } from "./normalize";
 import {
+  historyRange,
   previousValues,
   readJob,
   recordIngestRun,
-  refreshLatest,
+  refreshLatestFor,
   replaceMasterData,
   upsertPrices,
   writeJob,
 } from "./db";
 import type { Env, MasterData, PriceRecord } from "./types";
 
+/**
+ * Find the dates the upstream actually has figures for.
+ *
+ * The archive reaches back roughly sixteen months. Probing every candidate
+ * date costs one request each, which is cheap next to a backfill of
+ * thousands of district-days.
+ */
+/**
+ * The candidate dates for a backfill.
+ *
+ * Not every day has a report — Fridays and Saturdays are often empty — so
+ * the list is the calendar rather than a probe of every day. Probing 120
+ * days one request at a time would time the request out, and the ingest
+ * handles an empty day perfectly well on its own.
+ */
+async function findDatesWithData(env: Env, lookbackDays: number): Promise<string[]> {
+  void env;
+  const dates: string[] = [];
+  for (let i = 1; i <= lookbackDays; i++) {
+    const d = new Date(Date.now() - i * 86_400_000);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates.reverse();
+}
+
+/** How many days of history to keep in the database. */
+export const HISTORY_DAYS = 120;
+
+const JOB_KEY = "ingest:job";
 const MASTER_KEY = "ingest:master";
 const MASTER_TTL_SECONDS = 60 * 60 * 24 * 7;
 
@@ -52,6 +82,7 @@ const REFRESH_AFTER_MS = 20 * 60 * 60 * 1000;
 
 export interface IngestJob {
   id: string;
+  kind: "daily" | "backfill";
   priceDates: string[];
   dateIndex: number;
   districtIndex: number;
@@ -88,23 +119,56 @@ async function getMaster(env: Env, force = false): Promise<MasterData> {
 }
 
 /**
- * Find the most recent dates that actually contain submissions.
+ * Find the recent dates to (re)collect.
+ *
+ * The two most recent report days are always re-collected, because the
+ * upstream sometimes corrects a figure after publishing it. Anything older
+ * that we already hold is skipped — re-fetching it would burn the write
+ * budget for nothing.
  *
  * Returned oldest-first: carry-forward detection compares a day against the
  * day before it, so the earlier day must already be in the database.
  */
 async function targetDates(env: Env, lookbackDays: number): Promise<string[]> {
   const found: string[] = [];
-  for (let i = 0; i < lookbackDays; i++) {
+  for (let i = 0; i < lookbackDays && found.length < 2; i++) {
     const d = new Date(Date.now() - i * 86_400_000);
     const ymd = d.toISOString().slice(0, 10);
     const rows = await fetchDailyPrices({ priceDate: ymd, districtId: 47 }, { baseUrl: env.SOURCE_API });
-    if (rows.length > 0) {
-      found.push(ymd);
-      if (found.length >= 3) break; // today + yesterday + the day before
-    }
+    if (rows.length > 0) found.push(ymd);
   }
   return found.reverse();
+}
+
+/* ── Daily write budget ─────────────────────────────────────────────────── */
+
+/**
+ * D1's free tier allows 100,000 rows written per day. A backfill is hundreds
+ * of thousands of rows, so the ingest has to know where it stands and stop
+ * rather than lock itself out of the database until midnight UTC.
+ */
+const DAILY_ROW_BUDGET = 80_000;
+const BUDGET_KEY = (day: string) => `ingest:budget:${day}`;
+const PAUSE_KEY = "ingest:paused_until";
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function budgetUsed(env: Env): Promise<number> {
+  const v = await env.CACHE.get(BUDGET_KEY(today()));
+  return v ? Number(v) : 0;
+}
+
+async function budgetAdd(env: Env, rows: number): Promise<void> {
+  const used = (await budgetUsed(env)) + rows;
+  await env.CACHE.put(BUDGET_KEY(today()), String(used), { expirationTtl: 60 * 60 * 30 });
+}
+
+/** Is the backfill paused until tomorrow? */
+export async function backfillPaused(env: Env): Promise<boolean> {
+  const until = await env.CACHE.get(PAUSE_KEY);
+  return Boolean(until && until > today());
 }
 
 /**
@@ -122,12 +186,58 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
     return { action: "step", job: await advance(env, existing) };
   }
 
-  // No job running. Decide whether one is due.
-  const last = await lastCompletedReport(env.DB);  const age = last ? Date.now() - Date.parse(last) : Number.POSITIVE_INFINITY;
+  // The history claim on the site has to be true, so when it is thinner than
+  // it should be, a backfill runs before the daily refresh.
+  const range = await historyRange(env.DB);
+  if (range.days < HISTORY_DAYS * 0.8 && !(await backfillPaused(env))) {
+    console.log(`history is ${range.days} days — starting a backfill`);
+    return { action: "backfill", job: await startBackfill(env) };
+  }
+  // No job running. Decide whether a daily refresh is due.
+  const last = await lastCompletedReport(env.DB);
+  const age = last ? Date.now() - Date.parse(last) : Number.POSITIVE_INFINITY;
   if (age > REFRESH_AFTER_MS) {
     return { action: "started", job: await startIngest(env) };
   }
   return { action: "idle" };
+}
+
+/**
+ * Collect the history the upstream holds.
+ *
+ * The site's claim about how far back it reaches is computed from the
+ * database, so it is only ever as good as the collection actually is.
+ */
+export async function startBackfill(env: Env): Promise<IngestJob> {
+  const master = await getMaster(env);
+  const dates = await findDatesWithData(env, HISTORY_DAYS);
+  console.log(`backfill: ${dates.length} dates to collect`);
+
+  const job: IngestJob = {
+    id: `backfill_${Date.now().toString(36)}`,
+    kind: "backfill",
+    priceDates: dates,
+    dateIndex: 0,
+    districtIndex: 0,
+    districts: master.districts.map((d) => d.id),
+    rowsWritten: 0,
+    districtsOk: 0,
+    districtsMissing: 0,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    steps: 0,
+    status: "running",
+  };
+
+  await writeJob(env.DB, job);
+  return advance(env, job);
+}
+
+/** Drop anything older than the history window. */
+export async function pruneHistory(env: Env, keepDays = HISTORY_DAYS): Promise<number> {
+  const cutoff = new Date(Date.now() - keepDays * 86_400_000).toISOString().slice(0, 10);
+  const res = await env.DB.prepare(`DELETE FROM price_daily WHERE price_date < ?`).bind(cutoff).run();
+  return res.meta?.changes ?? 0;
 }
 
 /** The most recent date that finished a full district sweep. */
@@ -147,6 +257,7 @@ export async function startIngest(env: Env): Promise<IngestJob> {
     console.log("no report dates available yet");
     return {
       id: "noop",
+      kind: "daily",
       priceDates: [],
       dateIndex: 0,
       districtIndex: 0,
@@ -164,6 +275,7 @@ export async function startIngest(env: Env): Promise<IngestJob> {
 
   const job: IngestJob = {
     id: `job_${Date.now().toString(36)}`,
+    kind: "daily",
     priceDates: dates,
     dateIndex: 0,
     districtIndex: 0,
@@ -200,6 +312,20 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   const startedAt = new Date().toISOString();
   const batch = job.districts.slice(job.districtIndex, job.districtIndex + DISTRICTS_PER_STEP);
 
+  // Respect the daily write budget before spending it. This applies to every
+  // kind of job: the free tier allows 100,000 rows written per day, and a
+  // backfill is hundreds of thousands. Running past it locks the database
+  // out until midnight UTC, which would also stop the daily refresh.
+  if ((await budgetUsed(env)) >= DAILY_ROW_BUDGET) {
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    await env.CACHE.put(PAUSE_KEY, tomorrow, { expirationTtl: 60 * 60 * 48 });
+    job.status = "done";
+    job.error = "দৈনিক রাইট বাজেট পূর্ণ — আগামীকাল থেকে চালু হবে";
+    await writeJob(env.DB, job);
+    console.log("ingest paused: daily row-write budget reached");
+    return job;
+  }
+
   const results = await Promise.all(
     batch.map(async (districtId) => {
       try {
@@ -235,8 +361,13 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   if (records.length > 0) {
     const written = await upsertPrices(env.DB, records);
     job.rowsWritten += written;
-    // Keep the read path fresh while the date is still being collected.
-    await refreshLatest(env.DB, current);
+    await budgetAdd(env, written * 2); // the fact table and the snapshot table
+    // Refresh the read path for exactly the districts we just wrote.
+    await refreshLatestFor(
+      env.DB,
+      current,
+      results.filter((r) => r.error === null && r.rows.length > 0).map((r) => r.districtId),
+    );
   }
   job.districtsOk += ok;
   job.districtsMissing += missing;
@@ -245,7 +376,6 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   job.updatedAt = new Date().toISOString();
 
   if (job.districtIndex >= job.districts.length) {
-    await refreshLatest(env.DB, current);
     await recordIngestRun(env.DB, {
       priceDate: current,
       scope: "district",
@@ -323,6 +453,7 @@ async function backfillNational(env: Env, job: IngestJob): Promise<void> {
           min: Number.isFinite(retail) ? retail : null,
           max: Number.isFinite(retailMax) ? retailMax : null,
           avg: Number.isFinite(retail) ? retail : null,
+          unitId: c.unitRetail ?? 2,
           rawUnitId: c.unitRetail ?? 2,
           divisor: 1,
           divisorSource: "table",
@@ -332,6 +463,7 @@ async function backfillNational(env: Env, job: IngestJob): Promise<void> {
               min: Math.round((wholesale / 100) * 100) / 100,
               max: Number.isFinite(wholesaleMax) ? Math.round((wholesaleMax / 100) * 100) / 100 : null,
               avg: Math.round((wholesale / 100) * 100) / 100,
+              unitId: c.unitRetail ?? 2,
               rawUnitId: 1,
               divisor: 100,
               divisorSource: "table",

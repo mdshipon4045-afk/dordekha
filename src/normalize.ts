@@ -95,11 +95,15 @@ export function normalizeRow(raw: RawUpstreamRow, ctx: NormalizeContext): PriceR
           min: retailMin,
           max: retailMax,
           avg: retailAvg,
+          unitId: raw.unit_retail,
           rawUnitId: raw.unit_retail,
           divisor: 1,
           divisorSource: "table",
         };
 
+  // The wholesale figure is divided down to the retail unit, so that is the
+  // unit it is *in*. Labelling it with the upstream's own unit ("quintal")
+  // while the number is per kilogram is how a price service starts lying.
   const wholesale: PriceTriple | null =
     rawWholesaleAvg === null
       ? null
@@ -107,6 +111,7 @@ export function normalizeRow(raw: RawUpstreamRow, ctx: NormalizeContext): PriceR
           min: toRetailUnit(rawWholesaleMin, choice.divisor),
           max: toRetailUnit(rawWholesaleMax, choice.divisor),
           avg: toRetailUnit(rawWholesaleAvg, choice.divisor),
+          unitId: raw.unit_retail,
           rawUnitId: raw.unit_wholesale,
           divisor: choice.divisor,
           divisorSource: choice.source,

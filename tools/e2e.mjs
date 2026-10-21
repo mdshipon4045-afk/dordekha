@@ -35,8 +35,9 @@ async function post(path, body, headers = {}) {
   let ok = false;
   try {
     const j = JSON.parse(r.text);
-    ok = r.status === 200 && j.ok === true && j.rowsToday > 0;
-    check("/health reports ok with rows", ok, `status=${r.status} rows=${j.rowsToday} latest=${j.latestDate}`);
+    ok = r.status === 200 && j.ok === true && j.rows > 0;
+    check("/health reports ok with rows", ok, `status=${r.status} rows=${j.rows} latest=${j.latest_date}`);
+    check("/health does not leak pipeline internals", j.lastRun === undefined, JSON.stringify(j.lastRun));
   } catch {
     check("/health reports ok with rows", false, r.text.slice(0, 120));
   }
@@ -151,6 +152,48 @@ async function post(path, body, headers = {}) {
   const j3 = await get(`${path}`, { Accept: "application/json" });
   check("per-fact honours Accept: application/json", j3.status === 200 && j3.type.includes("application/json"), j3.type);
   check("per-fact page names the commodity", normBn(r.text).includes(normBn("পেঁয়াজ")));}
+
+// ── a requested date must never come back carrying another day's figures ──
+{
+  const hist = await get("/api/v1/series.csv?commodity=833&district=47");
+  const dates = hist.text.split("\n").slice(1).map((l) => l.split(",")[0]).filter(Boolean);
+  const have = dates[dates.length - 1];
+  const missing = "2020-01-01";
+
+  const r1 = await get(`/price/onion-new-833/dhaka/${have}.json`);
+  const j1 = JSON.parse(r1.text);
+  check(
+    "a date we hold returns that date",
+    r1.status === 200 && j1.price_date === have,
+    `asked ${have} -> ${j1.price_date}`,
+  );
+
+  const r2 = await get(`/price/onion-new-833/dhaka/${missing}.json`);
+  const body2 = r2.text;
+  check(
+    "a date we do not hold is refused, not substituted",
+    r2.status === 404 && !body2.includes('"price_date"'),
+    `status=${r2.status} body starts: ${body2.slice(0, 60)}`,
+  );
+
+  const r3 = await get(`/price/onion-new-833/dhaka/${missing}`);
+  check(
+    "the missing date gets an explanatory page",
+    r3.status === 404 && r3.text.includes("তারিখে কোনো তথ্য নেই"),
+    `status=${r3.status}`,
+  );
+}
+
+// ── units must be the same on both sides of the comparison ──
+{
+  const r = await get("/price/onion-new-833/dhaka/2026-10-19.json");
+  const j = JSON.parse(r.text);
+  check(
+    "wholesale is published in the retail unit",
+    j.prices.wholesale?.unit_bn === j.prices.retail?.unit_bn,
+    `retail=${j.prices.retail?.unit_bn} wholesale=${j.prices.wholesale?.unit_bn}`,
+  );
+}
 
 // ── verify ──────────────────────────────────────────────────────────────────
 {

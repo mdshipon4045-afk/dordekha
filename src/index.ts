@@ -14,6 +14,7 @@ import {
   busiestDistrict,
   carriedShare,
   commodityCoverage,
+  historyRange,
   historyFor,
   ingestHealth,
   latestDate,
@@ -21,6 +22,7 @@ import {
   latestForDistrict,
   ledgerRows,
   movers,
+  priceForDate,
   siteStats,
 } from "./db";
 import { formatBdt } from "./normalize";
@@ -48,6 +50,7 @@ import {
   renderLicenceHtml,
   renderMethodologyHtml,
   renderNotFoundHtml,
+  renderNoDataHtml,
   renderPriceIndexHtml,
   renderVerifyHtml,
   type PriceIndexItem,
@@ -143,10 +146,12 @@ export default {
     const url = new URL(request.url);
     const { path, forced } = splitSuffix(url.pathname);
     const fmt: Format = forced ?? negotiate(request.headers.get("accept"));
-    const latest = await latestDate(env.DB);
-    const ctxR = ctxFor(env, latest);
 
     try {
+      // Inside the try: a failed lookup must produce a readable error, not an
+      // empty 500 from the platform.
+      const latest = await latestDate(env.DB);
+      const ctxR = ctxFor(env, latest);
       // ── MCP ────────────────────────────────────────────────────────────
       if (path === "/mcp") {
         if (request.method !== "POST") {
@@ -177,10 +182,16 @@ export default {
 
       // ── Operational ─────────────────────────────────────────────────────
       if (path === "/health") {
+        // Public: only what a monitor needs. The internal pipeline state is
+        // not public information.
         const h = await ingestHealth(env.DB);
         const fresh =
           h.latestDate !== null && Date.now() - new Date(h.latestDate).getTime() < 5 * 86_400_000;
-        return json({ ok: fresh && (h.rowsToday ?? 0) > 0, ...h }, ctxR, fresh ? 200 : 503);
+        return json(
+          { ok: fresh && (h.rowsToday ?? 0) > 0, latest_date: h.latestDate, rows: h.rowsToday },
+          ctxR,
+          fresh ? 200 : 503,
+        );
       }
 
       if (path.startsWith("/internal/")) {
@@ -201,8 +212,10 @@ export default {
         if (path === "/internal/master/refresh") {
           return json({ refreshed: true, ...(await refreshMaster(env)) }, ctxR);
         }
-        if (path === "/internal/telegram/check") {
-          const { checkTelegram, telegramConfig } = await import("./telegram");
+        if (path === "/internal/health") {
+          return json(await ingestHealth(env.DB), ctxR);
+        }
+        if (path === "/internal/telegram/check") {          const { checkTelegram, telegramConfig } = await import("./telegram");
           const config = telegramConfig(env);
           if (!config) return json({ ok: false, error: "Telegram is not configured" }, ctxR, 400);
           return json(await checkTelegram(config), ctxR);
@@ -266,7 +279,12 @@ export default {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("request failed", url.pathname, message, err instanceof Error ? err.stack : "");
-      return json({ error: "Internal Error", message, path: url.pathname }, ctxR, 500);
+      const fallback = ctxFor(env, null);
+      return json(
+        { error: "Service temporarily unavailable", message, path: url.pathname },
+        fallback,
+        500,
+      );
     }
   },
 
@@ -315,6 +333,7 @@ async function homePage(env: Env, ctx: RenderContext, fmt: Format): Promise<Resp
   const data = {
     latestDate: ctx.latestDate,
     previousDate: null,
+    ledgerDistrict: district.nameBn,
     ledger,
     movers: moveRows.map((m) => ({
       commodityBn: m.commodityBn,
@@ -332,7 +351,7 @@ async function homePage(env: Env, ctx: RenderContext, fmt: Format): Promise<Resp
 
   if (fmt === "markdown") return md(renderHomeMarkdown(data, ctx), ctx);
   if (fmt === "json") {
-    return json({ ...data, source: ctx.sourceName, canonical_url: `${ctx.origin}/` }, ctx);
+    return json({ ...data, source: SOURCE, canonical_url: `${ctx.origin}/` }, ctx);
   }
   return html(renderHomeHtml(data, ctx), ctx);
 }
@@ -364,7 +383,7 @@ async function priceIndex(env: Env, ctx: RenderContext, fmt: Format): Promise<Re
     };
   });
 
-  if (fmt === "json") return json({ count: items.length, commodities: items, source: ctx.sourceName }, ctx);
+  if (fmt === "json") return json({ count: items.length, commodities: items, source: SOURCE }, ctx);
   if (fmt === "markdown") {
     const lines = ["# পণ্যতালিকা — দরদেখা", "", `মোট ${items.length}টি পণ্য।`, ""];
     for (const i of items) lines.push(`- [${i.bn}](/price/${i.slug}) — ${i.group}`);
@@ -455,7 +474,7 @@ async function pricePage(
             anomaly: r.anomaly,
             url: factUrl(ctx.origin, commodity.slug, r.districtSlug, r.priceDate),
           })),
-          source: ctx.sourceName,
+          source: SOURCE,
         },
         ctx,
       );
@@ -467,9 +486,36 @@ async function pricePage(
   const district = districts.find((d) => d.slug === districtSlugParam);
   if (!district) return notFound(env, ctx);
 
-  const rows = await latestForDistrict(env.DB, district.id, 1000);
-  const row = rows.find((r) => r.commodityId === commodity.id);
-  if (!row) return notFound(env, ctx);
+  // A requested date is looked up in the history. It is never inferred from
+  // the latest snapshot: a page for 1 August must not carry 17 October's
+  // figures under an August date.
+  const row = date
+    ? await priceForDate(env.DB, commodity.id, district.id, date)
+    : (await latestForDistrict(env.DB, district.id, 1000)).find((r) => r.commodityId === commodity.id);
+
+  if (!row) {
+    if (date) {
+      // Point the reader (or the assistant) at the dates that do exist.
+      const since = new Date(Date.now() - 400 * 86_400_000).toISOString().slice(0, 10);
+      const hist = await historyFor(env.DB, commodity.id, district.id, since, 400);
+      const available = hist
+        .map((h) => ({
+          date: h.priceDate,
+          url: factUrl(ctx.origin, commodity.slug, district.slug, h.priceDate),
+        }))
+        .filter((h) => h.date !== date)
+        .slice(0, 30);
+      return html(
+        renderNoDataHtml(
+          { commodity: commodity.bn, district: district.bn, date, available, latest: ctx.latestDate },
+          ctx,
+        ),
+        ctx,
+        404,
+      );
+    }
+    return notFound(env, ctx);
+  }
 
   const { results: us } = await env.DB.prepare(`SELECT id, name_bn FROM unit`).all();
   const unitMap = new Map<number, string>();
@@ -482,7 +528,7 @@ async function pricePage(
     commodityEn: commodity.en,
     districtBn: district.bn,
     districtEn: district.en,
-    date: date ?? row.priceDate,
+    date: row.priceDate,
     retail: {
       min: row.retail?.min ?? null,
       max: row.retail?.max ?? null,
@@ -495,11 +541,13 @@ async function pricePage(
           min: row.wholesale.min,
           max: row.wholesale.max,
           avg: row.wholesale.avg,
-          unitBn: unitMap.get(row.wholesale.unit ?? 0) ?? "কেজি",
-          unitEn: unitMap.get(row.wholesale.unit ?? 0) ?? "kg",
+          // The wholesale figure has been divided down to the retail unit, so
+          // the retail unit is the only honest label for it.
+          unitBn: unitMap.get(row.wholesale.unit ?? row.retail?.unit ?? 0) ?? "কেজি",
+          unitEn: unitMap.get(row.wholesale.unit ?? row.retail?.unit ?? 0) ?? "kg",
         }
       : null,
-    url: factUrl(ctx.origin, commodity.slug, district.slug, date ?? row.priceDate),
+    url: factUrl(ctx.origin, commodity.slug, district.slug, row.priceDate),
     carriedForward: row.carriedForward,
     anomaly: row.anomaly,
   };
@@ -555,7 +603,7 @@ async function districtPage(env: Env, ctx: RenderContext, request: Request, slug
           wholesale: r.wholesale,
           carried_forward: r.carriedForward,
         })),
-        source: ctx.sourceName,
+        source: SOURCE,
       },
       ctx,
     );
@@ -598,6 +646,13 @@ async function districtPage(env: Env, ctx: RenderContext, request: Request, slug
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
+/** Where the figures came from, for a reader who wants to follow the citation. */
+const SOURCE = {
+  name: "কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM)",
+  url: "https://market.dam.gov.bd/market_daily_price_report",
+  api: "https://moa-services.com/agri-service",
+} as const;
+
 async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Response> {
   const path = url.pathname.replace(/\/$/, "") || "/api";
 
@@ -616,7 +671,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
           carried_forward: r.carriedForward,
           anomaly: r.anomaly,
         })),
-        source: ctx.sourceName,
+        source: SOURCE,
         licence: `${ctx.origin}/licence`,
       },
       ctx,
@@ -638,7 +693,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
         {
           answer: null,
           error: found.error,
-          source: ctx.sourceName,
+          source: SOURCE,
           citation: `দরদেখা (${ctx.origin}) — তথ্য পাওয়া যায়নি`,
         },
         ctx,
@@ -674,7 +729,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
         wholesale: found.wholesale ?? null,
         carried_forward: found.carried_forward ?? false,
         url: found.canonical_url,
-        source: ctx.sourceName,
+        source: SOURCE,
         citation: `সূত্র: দরদেখা (${found.canonical_url}), তথ্যের তারিখ: ${asOf}, উৎস: কৃষি মন্ত্রণালয় / DAM।`,
         licence: `${ctx.origin}/licence`,
       },
@@ -727,9 +782,9 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
 
   if (path === "/api/v1/districts") {
     const { results } = await env.DB
-      .prepare(`SELECT id, name_bn, name_en, division_id FROM district ORDER BY name_bn`)
+      .prepare(`SELECT id, name_bn, name_en, division_id FROM district WHERE id > 0 ORDER BY name_bn`)
       .all();
-    return json({ count: (results ?? []).length, districts: results, source: ctx.sourceName }, ctx);
+    return json({ count: (results ?? []).length, districts: results, source: SOURCE }, ctx);
   }
 
   if (path === "/api/v1/commodities") {
@@ -738,7 +793,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
         `SELECT c.id, c.name_bn, c.name_en, c.group_id, g.name_bn AS group_bn FROM commodity c LEFT JOIN commodity_group g ON g.id=c.group_id ORDER BY g.name_bn, c.name_bn`,
       )
       .all();
-    return json({ count: (results ?? []).length, commodities: results, source: ctx.sourceName }, ctx);
+    return json({ count: (results ?? []).length, commodities: results, source: SOURCE }, ctx);
   }
 
   return json({ error: "Not Found", hint: "see /api" }, ctx, 404);
@@ -844,7 +899,7 @@ async function searchFact(
       ambiguous: commodityCandidates.length > 1,
       alternatives: { commodities: picked.alternatives.map((a) => a.nameBn), districts: [] },
       canonical_url: factUrl(ctx.origin, cSlug, dSlug, row.priceDate),
-      source: { name: ctx.sourceName },
+      source: SOURCE,
       licence: `${ctx.origin}/licence`,
     };
   }
@@ -902,7 +957,7 @@ async function searchFact(
     dearest_district: dearest.r.districtId,
     districts_reporting: withRetail.length,
     canonical_url: `${ctx.origin}/price/${cSlug}`,
-    source: { name: ctx.sourceName },
+    source: SOURCE,
     licence: `${ctx.origin}/licence`,
   };
 }
@@ -987,8 +1042,16 @@ Sitemap: ${base}/sitemap.xml
   });
 }
 
-function llmsTxt(env: Env): Response {
+async function llmsTxt(env: Env): Promise<Response> {
   const base = env.SITE_ORIGIN.replace(/\/$/, "");
+  // The claim about how much history we hold is computed, not asserted. A
+  // stale "16 months" in this file would be a lie the moment the database
+  // fell behind.
+  const range = await historyRange(env.DB);
+  const coverage = range.days
+    ? `${range.first} থেকে ${range.last} (${range.days}টি প্রতিবেদনের তারিখ)`
+    : "এখনো কোনো তারিখ নেই";
+
   const body = `# দরদেখা (Dordekha)
 
 > বাংলাদেশের সরকারি দৈনিক কৃষি বাজারদর, ইউনিট-সংশোধিত ও ধাপে ধাপে যাচাই করা।
@@ -996,7 +1059,22 @@ function llmsTxt(env: Env): Response {
 
 ## What this is
 A daily, machine-readable feed of the Ministry of Agriculture (কৃষি বিপণন অধিদপ্তর, DAM) market price reports:
-64 districts, 505 upazilas, 447 commodities, retail and wholesale, with roughly 16 months of history.
+64 districts, 505 upazilas, 447 commodities, retail and wholesale.
+
+**History currently held: ${coverage}.**
+The upstream archive reaches further back, but this service publishes only what it has
+actually collected and normalised. Ask for a date it does not hold and it will say so
+rather than substitute a different day.
+
+**Units.** Retail prices are in the commodity's own unit (usually 1 kg, sometimes 4 pieces
+or 1 piece). Wholesale prices are divided down to the *same* retail unit, so the two are
+directly comparable. The upstream's own unit and the divisor applied are recorded on every
+row.
+
+**Honesty rules.** Where the source has no figure for a place and day, there is no figure
+here. Where the upstream repeated the previous day's number, the row is stamped
+"পূর্বের" (carried forward). Where a value could not be reconciled, the row is stamped
+"সতর্কতা" and the raw divisor is published alongside.
 
 ## Key pages
 - [Dataset and scope](${base}/dataset): what is covered, what is not, and how the numbers are derived.
@@ -1014,13 +1092,17 @@ A daily, machine-readable feed of the Ministry of Agriculture (কৃষি ব�
 - CSV series: \`GET ${base}/api/v1/series.csv?commodity=<id>&district=<id>\`
 - Every page has a \`.md\` and a \`.json\` variant. Content negotiation via \`Accept: text/markdown\` works too.
 - Verify a claim: \`GET ${base}/verify?claim=পেঁয়াজ ৬০ টাকা ঢাকায়\`
-- MCP server: \`POST ${base}/mcp\` with tools \`get_market_price\`, \`compare_districts\`, \`get_price_trend\`, \`verify_claim\`
+
+## Source
+কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM) — the daily online market price report.
+Public report page: https://market.dam.gov.bd/market_daily_price_report
 
 ## Attribution
 Please cite as: দরদেখা (${base}), data: কৃষি মন্ত্রণালয় / DAM daily price report.
+Always give the data date. Do not write "today" — give the date.
 `;
   return new Response(body, {
-    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=600" },
   });
 }
 

@@ -23,7 +23,10 @@ export interface PriceRowOut {
     min: number | null;
     max: number | null;
     avg: number | null;
+    /** The unit the value is in (the retail unit). */
     unit: number | null;
+    /** The unit the upstream used, for audit. */
+    rawUnit: number | null;
     divisor: number | null;
     divisorSource: string | null;
   } | null;
@@ -34,7 +37,7 @@ export interface PriceRowOut {
 const SELECT_COLS = `
   price_date, district_id, upazila_id, commodity_id, group_id, sub_group_id,
   retail_min, retail_max, retail_avg, retail_unit,
-  wholesale_min, wholesale_max, wholesale_avg, wholesale_unit,
+  wholesale_min, wholesale_max, wholesale_avg, wholesale_unit, wholesale_raw_unit,
   wholesale_divisor, wholesale_divisor_src, carried_forward, anomaly
 `;
 
@@ -42,6 +45,7 @@ function mapRow(r: Record<string, unknown>): PriceRowOut {
   const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
   const hasRetail = r.retail_avg !== null && r.retail_avg !== undefined;
   const hasWholesale = r.wholesale_avg !== null && r.wholesale_avg !== undefined;
+  const retailUnit = num(r.retail_unit);
   return {
     priceDate: String(r.price_date),
     districtId: Number(r.district_id),
@@ -50,14 +54,17 @@ function mapRow(r: Record<string, unknown>): PriceRowOut {
     groupId: Number(r.group_id),
     subGroupId: Number(r.sub_group_id),
     retail: hasRetail
-      ? { min: num(r.retail_min), max: num(r.retail_max), avg: num(r.retail_avg), unit: num(r.retail_unit) }
+      ? { min: num(r.retail_min), max: num(r.retail_max), avg: num(r.retail_avg), unit: retailUnit }
       : null,
     wholesale: hasWholesale
       ? {
           min: num(r.wholesale_min),
           max: num(r.wholesale_max),
           avg: num(r.wholesale_avg),
-          unit: num(r.wholesale_unit),
+          // The value is in the retail unit; the upstream's own unit is kept
+          // only for audit.
+          unit: retailUnit,
+          rawUnit: num(r.wholesale_raw_unit) ?? num(r.wholesale_unit),
           divisor: num(r.wholesale_divisor),
           divisorSource: (r.wholesale_divisor_src as string | null) ?? null,
         }
@@ -78,7 +85,7 @@ function mapRow(r: Record<string, unknown>): PriceRowOut {
 export async function upsertPrices(db: D1Database, records: PriceRecord[]): Promise<number> {
   if (records.length === 0) return 0;
 
-  const COLUMNS = 19;
+  const COLUMNS = 20;
   /** Conservative: D1 starts rejecting somewhere around 100 bound values. */
   const MAX_VARS_PER_STATEMENT = 90;
   const ROWS_PER_STATEMENT = Math.max(1, Math.floor(MAX_VARS_PER_STATEMENT / COLUMNS));
@@ -92,7 +99,7 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
     const values: unknown[] = [];
     const placeholders: string[] = [];
     for (const r of chunk) {
-      placeholders.push("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      placeholders.push("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
       values.push(
         r.priceDate,
         r.districtId,
@@ -103,10 +110,11 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
         r.retail?.min ?? null,
         r.retail?.max ?? null,
         r.retail?.avg ?? null,
-        r.retail?.rawUnitId ?? null,
+        r.retail?.unitId ?? null,
         r.wholesale?.min ?? null,
         r.wholesale?.max ?? null,
         r.wholesale?.avg ?? null,
+        r.wholesale?.unitId ?? null,
         r.wholesale?.rawUnitId ?? null,
         r.wholesale?.divisor ?? null,
         r.wholesale?.divisorSource ?? null,
@@ -119,7 +127,7 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
       INSERT INTO price_daily (
         price_date, district_id, upazila_id, commodity_id, group_id, sub_group_id,
         retail_min, retail_max, retail_avg, retail_unit,
-        wholesale_min, wholesale_max, wholesale_avg, wholesale_unit,
+        wholesale_min, wholesale_max, wholesale_avg, wholesale_unit, wholesale_raw_unit,
         wholesale_divisor, wholesale_divisor_src, carried_forward, anomaly, ingested_at
       ) VALUES ${placeholders.join(",")}
       ON CONFLICT(price_date, district_id, upazila_id, commodity_id) DO UPDATE SET
@@ -127,7 +135,7 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
         retail_min=excluded.retail_min, retail_max=excluded.retail_max, retail_avg=excluded.retail_avg,
         retail_unit=excluded.retail_unit,
         wholesale_min=excluded.wholesale_min, wholesale_max=excluded.wholesale_max, wholesale_avg=excluded.wholesale_avg,
-        wholesale_unit=excluded.wholesale_unit,
+        wholesale_unit=excluded.wholesale_unit, wholesale_raw_unit=excluded.wholesale_raw_unit,
         wholesale_divisor=excluded.wholesale_divisor, wholesale_divisor_src=excluded.wholesale_divisor_src,
         carried_forward=excluded.carried_forward, anomaly=excluded.anomaly, ingested_at=excluded.ingested_at
     `;
@@ -143,38 +151,45 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
 }
 
 /**
- * Refresh the materialised "latest" table for one report date.
+ * Refresh the materialised "latest" table for one batch.
  *
- * This runs after every batch, not only when a date finishes, so the site
- * shows fresh figures while a date is still being collected. It is an
- * upsert rather than a delete-and-reinsert so the cost does not grow with
- * the size of the date.
+ * Only the rows just written are touched. Re-copying a whole date every
+ * time was writing 3,900 rows per call, and with a few hundred calls that
+ * is the entire daily write budget of the free tier spent on a table that
+ * only ever holds one date per key.
  */
-export async function refreshLatest(db: D1Database, priceDate: string): Promise<number> {
+export async function refreshLatestFor(
+  db: D1Database,
+  priceDate: string,
+  districtIds: number[],
+): Promise<number> {
+  if (districtIds.length === 0) return 0;
+  const placeholders = districtIds.map(() => "?").join(",");
   const res = await db
     .prepare(
       `INSERT INTO price_latest (
          district_id, upazila_id, commodity_id, group_id, sub_group_id, price_date,
          retail_min, retail_max, retail_avg, retail_unit,
-         wholesale_min, wholesale_max, wholesale_avg, wholesale_unit,
+         wholesale_min, wholesale_max, wholesale_avg, wholesale_unit, wholesale_raw_unit,
          wholesale_divisor, wholesale_divisor_src, carried_forward, anomaly, updated_at
        )
        SELECT district_id, upazila_id, commodity_id, group_id, sub_group_id, price_date,
          retail_min, retail_max, retail_avg, retail_unit,
-         wholesale_min, wholesale_max, wholesale_avg, wholesale_unit,
+         wholesale_min, wholesale_max, wholesale_avg, wholesale_unit, wholesale_raw_unit,
          wholesale_divisor, wholesale_divisor_src, carried_forward, anomaly, ?
-       FROM price_daily WHERE price_date = ? AND true
+       FROM price_daily
+       WHERE price_date = ? AND district_id IN (${placeholders}) AND true
        ON CONFLICT(district_id, upazila_id, commodity_id) DO UPDATE SET
          group_id=excluded.group_id, sub_group_id=excluded.sub_group_id,
          price_date=excluded.price_date,
          retail_min=excluded.retail_min, retail_max=excluded.retail_max, retail_avg=excluded.retail_avg,
          retail_unit=excluded.retail_unit,
          wholesale_min=excluded.wholesale_min, wholesale_max=excluded.wholesale_max, wholesale_avg=excluded.wholesale_avg,
-         wholesale_unit=excluded.wholesale_unit,
+         wholesale_unit=excluded.wholesale_unit, wholesale_raw_unit=excluded.wholesale_raw_unit,
          wholesale_divisor=excluded.wholesale_divisor, wholesale_divisor_src=excluded.wholesale_divisor_src,
          carried_forward=excluded.carried_forward, anomaly=excluded.anomaly, updated_at=excluded.updated_at`,
     )
-    .bind(new Date().toISOString(), priceDate)
+    .bind(new Date().toISOString(), priceDate, ...districtIds)
     .run();
 
   return res.meta?.changes ?? 0;
@@ -238,12 +253,47 @@ export async function latestForCommodity(
   const { results } = await db
     .prepare(
       `SELECT ${SELECT_COLS} FROM price_latest
-        WHERE commodity_id = ? AND upazila_id = 0
+        WHERE commodity_id = ? AND upazila_id = 0 AND district_id > 0
         ORDER BY district_id LIMIT ?`,
     )
     .bind(commodityId, limit)
     .all();
   return (results ?? []).map((r) => mapRow(r as Record<string, unknown>));
+}
+
+/**
+ * One price on one specific date.
+ *
+ * The date is looked up in the history, never inferred. If the source has
+ * nothing for that day, the answer is that there is nothing — a request for
+ * a past date must never come back carrying a newer date's figures.
+ */
+export async function priceForDate(
+  db: D1Database,
+  commodityId: number,
+  districtId: number,
+  date: string,
+): Promise<PriceRowOut | null> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${SELECT_COLS} FROM price_daily
+        WHERE commodity_id = ? AND district_id = ? AND upazila_id = 0 AND price_date = ?`,
+    )
+    .bind(commodityId, districtId, date)
+    .all();
+  const row = (results ?? [])[0];
+  return row ? mapRow(row as Record<string, unknown>) : null;
+}
+
+/** The actual span of history we hold. */
+export async function historyRange(db: D1Database): Promise<{ first: string | null; last: string | null; days: number }> {
+  const row = await db
+    .prepare(
+      `SELECT MIN(price_date) AS first, MAX(price_date) AS last, COUNT(DISTINCT price_date) AS days
+         FROM price_daily WHERE district_id > 0`,
+    )
+    .first<{ first: string | null; last: string | null; days: number }>();
+  return { first: row?.first ?? null, last: row?.last ?? null, days: row?.days ?? 0 };
 }
 
 /** History for one commodity in one district, oldest → newest. */
@@ -490,8 +540,10 @@ export async function ledgerRows(db: D1Database, districtId: number, limit = 14)
 /**
  * The biggest genuine moves between the two most recent report dates.
  *
- * Only rows that were freshly reported on the later date are considered:
- * a value the upstream merely copied forward did not move.
+ * Only rows that were freshly reported on the later date count — a value the
+ * upstream merely copied forward did not move. Rows the upstream itself
+ * flagged as anomalous are excluded, and so is any overnight change larger
+ * than 100%, which is a data-entry error far more often than it is a market.
  */
 export async function movers(db: D1Database, limit = 6): Promise<MoverRowDb[]> {
   const dates = await db
@@ -515,7 +567,9 @@ export async function movers(db: D1Database, limit = 6): Promise<MoverRowDb[]> {
          JOIN district d ON d.id = n.district_id
         WHERE n.price_date = ? AND n.upazila_id = 0 AND n.carried_forward = 0
           AND n.retail_avg IS NOT NULL AND o.retail_avg IS NOT NULL
+          AND n.anomaly IS NULL AND o.anomaly IS NULL
           AND n.retail_avg <> o.retail_avg
+          AND ABS(n.retail_avg - o.retail_avg) / n.retail_avg <= 1.0
         ORDER BY ABS(n.retail_avg - o.retail_avg) / n.retail_avg DESC
         LIMIT ?`,
     )
@@ -570,15 +624,14 @@ export async function busiestDistrict(db: D1Database): Promise<{ id: number; nam
     .prepare(
       `SELECT d.id AS id, d.name_bn AS name FROM price_latest p
          JOIN district d ON d.id = p.district_id
-        WHERE p.upazila_id = 0
+        WHERE p.upazila_id = 0 AND p.district_id > 0 AND p.retail_avg IS NOT NULL
         GROUP BY d.id ORDER BY COUNT(*) DESC LIMIT 1`,
     )
     .first<{ id: number; name: string }>();
   if (row) return { id: row.id, nameBn: row.name };
-  const fallback = await db.prepare(`SELECT id, name_bn AS name FROM district ORDER BY id LIMIT 1`).first<{
-    id: number;
-    name: string;
-  }>();
+  const fallback = await db
+    .prepare(`SELECT id, name_bn AS name FROM district WHERE id > 0 ORDER BY id LIMIT 1`)
+    .first<{ id: number; name: string }>();
   return { id: fallback?.id ?? 47, nameBn: fallback?.name ?? "ঢাকা" };
 }
 

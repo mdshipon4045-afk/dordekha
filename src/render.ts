@@ -130,6 +130,11 @@ code,kbd{font-family:var(--font-mono);font-size:.86em}
 .hero h1 em{font-style:normal;color:var(--red)}
 .lead{font-size:18px;line-height:1.58;color:var(--ink-2);max-width:56ch;margin:16px 0 0;font-weight:360}
 .lead b{font-weight:600;color:var(--ink)}
+.stamp-note{
+  font-family:var(--font-mono);font-size:12px;letter-spacing:.02em;color:var(--muted);
+  margin:12px 0 0;padding-left:11px;border-left:2px solid var(--rule);
+}
+.stamp-note strong{color:var(--ink-2);font-weight:500}
 .ledger-figure{width:100%;height:auto;display:block;margin-top:6px}
 .figure-cap{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:center;margin-top:10px}
 
@@ -471,6 +476,8 @@ export interface MoverRow {
 export interface HomeData {
   latestDate: string | null;
   previousDate: string | null;
+  /** Which district the ledger sheet below is showing, and why. */
+  ledgerDistrict: string;
   ledger: LedgerRow[];
   movers: MoverRow[];
   carriedPct: number | null;
@@ -554,6 +561,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
         <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
         <h1>আজকের <em>বাজারদর</em></h1>
         <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commodityCount}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
+        <p class="stamp-note">সর্বশেষ সরকারি প্রতিবেদন: <strong>${esc(d.latestDate ?? "—")}</strong> · উৎস প্রতিদিন আগের দিনের হিসাব দেয়, তাই প্রতিটি উত্তরে তারিখ দেওয়া আছে।</p>
 
         <div class="lookup">
           <div class="lookup-label">আজ কত টাকা?</div>
@@ -574,7 +582,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
 
     <div class="stats">
       <div class="stat"><div class="n">${d.districtCount}<small>টি</small></div><div class="l">জেলা</div></div>
-      <div class="stat"><div class="n">${d.commodityCount}<small>টি</small></div><div class="l">পণ্য</div></div>
+      <div class="stat"><div class="n">${d.commodityCount}<small>টি</small></div><div class="l">পণ্যের ক্যাটালগ</div></div>
       <div class="stat"><div class="n">${d.dayCount}<small> দিন</small></div><div class="l">আর্কাইভ</div></div>
       <div class="stat"><div class="n">${d.rowCount.toLocaleString("en-US")}</div><div class="l">তথ্যের সারি</div></div>
     </div>
@@ -590,7 +598,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
         : ""
     }</p>
     <div class="sheet">
-      <div class="sheet-bar"><span>খুচরা ও পাইকারি দর · টাকা</span><span>${esc(d.latestDate ?? "")}</span></div>
+      <div class="sheet-bar"><span>আজকের খাতা · ${esc(d.ledgerDistrict)} জেলা</span><span>${esc(d.latestDate ?? "")}</span></div>
       <table class="ledger">
         <thead><tr><th>পণ্য</th><th>জেলা</th><th class="n">খুচরা</th><th class="n">গড়</th><th class="n">পাইকারি</th><th>অবস্থা</th></tr></thead>
         <tbody>${ledgerRows || '<tr><td colspan="6">এখনো কোনো তথ্য নেই।</td></tr>'}</tbody>
@@ -858,7 +866,13 @@ export function renderPriceFactJson(f: PriceFact, ctx: RenderContext): unknown {
     },
     carried_forward: f.carriedForward,
     anomaly: f.anomaly,
-    source: { name: ctx.sourceName, url: "https://moa-services.com/agri-service" },
+    source: {
+      name: ctx.sourceName,
+      // The human-facing government report, so a reader can follow the
+      // citation to the actual document rather than to an API endpoint.
+      url: "https://market.dam.gov.bd/market_daily_price_report",
+      api: "https://moa-services.com/agri-service",
+    },
     canonical_url: f.url,
     retrieved_at: ctx.generatedAt,
     licence: `${ctx.origin.replace(/\/$/, "")}/licence`,

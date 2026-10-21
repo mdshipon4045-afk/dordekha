@@ -12,11 +12,18 @@ export interface PriceTriple {
   min: number | null;
   max: number | null;
   avg: number | null;
-  /** Unit id the raw upstream figure was expressed in (see src/units.ts). */
+  /**
+   * The unit the value is expressed in. For wholesale this is the *retail*
+   * unit, because the bulk figure has been divided down to it — labelling a
+   * per-kilogram price "per quintal" is the exact confusion this service
+   * exists to remove.
+   */
+  unitId: number;
+  /** The unit the upstream originally used, kept for audit. */
   rawUnitId: number;
   /**
    * Divisor applied to the raw upstream figure to express it in the
-   * *retail unit* of the same commodity. 1 means no conversion was needed.
+   * retail unit of the same commodity. 1 means no conversion was needed.
    */
   divisor: number;
   /** How the divisor was chosen — recorded so every number is auditable. */
