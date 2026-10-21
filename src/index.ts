@@ -38,6 +38,7 @@ import { formatBdt } from "./normalize";
 import { extractKeywords, foldForCompare } from "./bn";
 import { candidatesFor, pickByCoverage, resolve } from "./resolve";
 import { refreshMaster, startIngest, stepIngest, buildDigestInput, cronTick } from "./ingest";
+import { ensureIndexes, maintenanceState } from "./maintenance";
 import {
   esc,
   factUrl,
@@ -232,7 +233,14 @@ export default {
           return json({ refreshed: true, ...(await refreshMaster(env)) }, ctxR);
         }
         if (path === "/internal/health") {
-          return json(await ingestHealth(env.DB), ctxR);
+          return json(
+            { ...(await ingestHealth(env.DB)), maintenance: await maintenanceState(env) },
+            ctxR,
+          );
+        }
+        if (path === "/internal/maintenance") {
+          const result = await ensureIndexes(env);
+          return json(result, ctxR);
         }
         if (path === "/internal/snapshot") {
           // Write the current prices and the daily aggregates to KV, so the
@@ -362,6 +370,24 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // The daily upkeep: the worker applies its own indexes once the D1 read
+    // quota has reset. Without them every read of the price table is a
+    // full scan, and the quota is gone by the afternoon.
+    if (event.cron === "5 0 * * *") {
+      ctx.waitUntil(
+        (async () => {
+          try {
+            const result = await ensureIndexes(env);
+            if (result.created.length > 0) console.log(`maintenance: created ${result.created.join(", ")}`);
+            if (result.failed.length > 0) console.error(`maintenance: failed ${result.failed.join("; ")}`);
+          } catch (err) {
+            console.error("maintenance failed", err);
+          }
+        })(),
+      );
+      return;
+    }
+
     // The cron runs every minute. Each tick either continues the ingest job
     // or starts a new one when one is due. There is no self-call: a Worker
     // cannot reliably call itself in production, and the job position lives

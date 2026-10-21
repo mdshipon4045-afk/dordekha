@@ -43,7 +43,10 @@
   ],
 
   "triggers": {
-    "crons": ["* * * * *"]
+    // The heartbeat that drives the ingest, and the daily upkeep that
+    // applies the indexes of migration 0004. 00:05 UTC is 06:05 in
+    // Bangladesh, five minutes after the D1 read quota resets.
+    "crons": ["* * * * *", "5 0 * * *"]
   },
 
   "vars": {

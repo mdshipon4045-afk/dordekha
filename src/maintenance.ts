@@ -1,0 +1,124 @@
+/**
+ * The worker's own schema upkeep.
+ *
+ * WHY THE WORKER DOES THIS ITSELF
+ * -------------------------------
+ * Migration 0004 adds the indexes that turn a full table scan into a
+ * lookup. On 2026-10-21 it could not be applied, because the D1 read
+ * quota — the very thing the indexes exist to protect — was already spent.
+ * The quota resets at 00:00 UTC, which is 06:00 in Bangladesh, and waiting
+ * for a human to be awake is not an operating model.
+ *
+ * So the worker applies its own indexes, on a daily cron, once the quota
+ * is back. `CREATE INDEX IF NOT EXISTS` is idempotent, and a failure is
+ * reported rather than swallowed: the ingest stays paused until the index
+ * is really there, because a backfill without it would read the whole
+ * price table for every batch of districts.
+ */
+
+import type { Env } from "./types";
+
+export interface RequiredIndex {
+  name: string;
+  sql: string;
+}
+
+/**
+ * The indexes of migration 0004.
+ *
+ * This list and `migrations/0004_indexes.sql` say the same thing, and a
+ * test fails if they ever drift apart.
+ */
+export const REQUIRED_INDEXES: RequiredIndex[] = [
+  {
+    name: "idx_pl_commodity",
+    sql: "CREATE INDEX IF NOT EXISTS idx_pl_commodity ON price_latest(commodity_id, district_id)",
+  },
+  {
+    name: "idx_pl_district",
+    sql: "CREATE INDEX IF NOT EXISTS idx_pl_district ON price_latest(district_id, upazila_id)",
+  },
+  {
+    name: "idx_pd_date_district",
+    sql: "CREATE INDEX IF NOT EXISTS idx_pd_date_district ON price_daily(price_date, district_id, commodity_id)",
+  },
+  {
+    name: "idx_pd_district_commodity",
+    sql: "CREATE INDEX IF NOT EXISTS idx_pd_district_commodity ON price_daily(district_id, commodity_id, price_date)",
+  },
+  {
+    name: "idx_ingest_scope",
+    sql: "CREATE INDEX IF NOT EXISTS idx_ingest_scope ON ingest_run(scope, status, price_date)",
+  },
+];
+
+const STATE_KEY = "maintenance:indexes";
+
+export interface MaintenanceResult {
+  at: string;
+  /** Indexes this run created. */
+  created: string[];
+  /** Indexes that were already there. */
+  present: string[];
+  /** Indexes that could not be created, with the reason. */
+  failed: string[];
+}
+
+/**
+ * Make sure the required indexes exist.
+ *
+ * The check reads a handful of rows from the schema catalogue, which is
+ * the cheapest query in the database. The creates are idempotent, so a
+ * second run costs the same and changes nothing.
+ */
+export async function ensureIndexes(env: Env): Promise<MaintenanceResult> {
+  const names = REQUIRED_INDEXES.map((i) => i.name);
+  const placeholders = names.map(() => "?").join(",");
+  const existing = new Set<string>();
+
+  try {
+    const { results } = await env.DB
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${placeholders})`)
+      .bind(...names)
+      .all<{ name: string }>();
+    for (const r of results ?? []) existing.add(String(r.name));
+  } catch {
+    // If the catalogue cannot be read, try the creates anyway. They are
+    // idempotent, so a false "missing" costs nothing but a statement.
+  }
+
+  const created: string[] = [];
+  const present: string[] = [];
+  const failed: string[] = [];
+
+  for (const index of REQUIRED_INDEXES) {
+    if (existing.has(index.name)) {
+      present.push(index.name);
+      continue;
+    }
+    try {
+      await env.DB.prepare(index.sql).run();
+      created.push(index.name);
+    } catch (err) {
+      failed.push(`${index.name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const result: MaintenanceResult = { at: new Date().toISOString(), created, present, failed };
+  try {
+    await env.CACHE.put(STATE_KEY, JSON.stringify(result), { expirationTtl: 60 * 60 * 24 * 30 });
+  } catch {
+    /* the recorded state is a convenience, never a requirement */
+  }
+  return result;
+}
+
+/** The last recorded maintenance outcome, if there is one. */
+export async function maintenanceState(env: Env): Promise<MaintenanceResult | null> {
+  try {
+    const raw = await env.CACHE.get(STATE_KEY, "json");
+    return (raw as MaintenanceResult) ?? null;
+  } catch {
+    return null;
+  }
+}

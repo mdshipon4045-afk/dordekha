@@ -87,7 +87,42 @@ cost one batched query instead of four full scans.
 
 ---
 
-## Task 2: The history cache becomes a first-class store
+## Task 2: The worker maintains its own schema
+
+**Goal:** the indexes of migration 0004 are applied by the worker itself,
+once the D1 read quota resets — no human awake at 06:00 BD required.
+
+**Why this is in the plan at all:** on 2026-10-21 the quota was already spent,
+so `CREATE INDEX` failed with code 7500. Without the indexes every read of
+the price table is a full scan, so the backfill cannot run without
+re-emptying the budget it is trying to fill. A waiting human is not an
+operating model.
+
+**Interfaces**
+- Produces: `src/maintenance.ts` — `REQUIRED_INDEXES`, `ensureIndexes(env)`,
+  `maintenanceState(env)`.
+- Consumes: `migrations/0004_indexes.sql` — a test fails if the two drift.
+- Produces: the cron `5 0 * * *` (00:05 UTC = 06:05 BD) and the admin route
+  `GET /internal/maintenance`.
+
+**Steps**
+
+1. Write the failing test — `test/maintenance.test.ts`:
+   - A missing index is created.
+   - An index that is already there is not created again, and nothing is
+     written.
+   - A failing create is reported, not swallowed.
+   - The outcome is recorded where it can be read without the logs.
+   - The index list and the migration file say the same thing.
+   - Run it — expect failure. **Expected:** `src/maintenance` does not exist.
+2. Implement `src/maintenance.ts` and wire the cron and the route.
+3. Run the test — **Expected:** all cases pass.
+4. Run `npx vitest run` and `npx tsc --noEmit` — **Expected:** green, clean.
+5. Commit: `feat(maintenance): the worker applies its own indexes`.
+
+---
+
+## Task 3: The history cache becomes a first-class store
 
 **Goal:** the KV history is maintained by the ingest, sharded so it can never
 hit the 25 MB value limit, and the read paths (trend, aggregates) use it.
@@ -131,7 +166,7 @@ hit the 25 MB value limit, and the read paths (trend, aggregates) use it.
 
 ---
 
-## Task 3: The paid tier, first slice
+## Task 4: The paid tier, first slice
 
 **Goal:** there is something to sell the moment the licence arrives — an API
 key, a rate limit, a quota, and a usage view. No payment integration, no
