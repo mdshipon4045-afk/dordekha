@@ -345,6 +345,19 @@ console.log(`\nVerifying the audit findings against ${B}\n`);
       rest.json?.retail?.unit_bn === page.json?.prices?.retail?.unit_bn,
     `rest unit_bn=${rest.json?.retail?.unit_bn} page unit_bn=${page.json?.prices?.retail?.unit_bn}`,
   );
+  // And the MCP must use the same field name, or a consumer learns two
+  // spellings of the same thing.
+  const call = await mcp("tools/call", {
+    name: "get_market_price",
+    arguments: { commodity: "পেঁয়াজ", district: "ঢাকা" },
+  });
+  const sc = call.json?.result?.structuredContent;
+  check(
+    "তাৎ-৩০b",
+    "the MCP tool uses the same unit field name as the REST API",
+    sc?.retail?.unit_bn === rest.json?.retail?.unit_bn,
+    `mcp unit_bn=${sc?.retail?.unit_bn} rest unit_bn=${rest.json?.retail?.unit_bn}`,
+  );
 }
 
 // ── তাৎ-৩১: the sitemap must contain the citable per-fact URLs ───────────

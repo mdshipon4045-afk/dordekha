@@ -404,9 +404,29 @@ async function getMarketPrice(
       commodity: { bn: commodity.nameBn, en: commodity.nameEn },
       district: { bn: district.nameBn, en: district.nameEn },
       price_date: row.priceDate,
-      retail: { ...fact.retail, unit_id: row.retail.unit, is_midpoint: row.retail.isMidpoint },
+      // The same field names the REST API uses, so a consumer does not have
+      // to learn two spellings of the same thing.
+      retail: {
+        min: fact.retail.min,
+        max: fact.retail.max,
+        avg: fact.retail.avg,
+        unit: row.retail.unit,
+        unit_bn: fact.retail.unitBn,
+        unit_en: fact.retail.unitEn,
+        is_midpoint: row.retail.isMidpoint,
+      },
       wholesale: row.wholesale
-        ? { ...fact.wholesale, unit_id: row.wholesale.unit, is_midpoint: row.wholesale.isMidpoint }
+        ? {
+            min: row.wholesale.min,
+            max: row.wholesale.max,
+            avg: row.wholesale.avg,
+            unit: row.wholesale.unit,
+            unit_bn: wholesaleUnit.bn,
+            unit_en: wholesaleUnit.en,
+            is_midpoint: row.wholesale.isMidpoint,
+            divisor: row.wholesale.divisor,
+            divisor_source: row.wholesale.divisorSource,
+          }
         : null,
       carried_forward: row.carriedForward,
       anomaly: row.anomaly,
@@ -460,6 +480,7 @@ async function compareDistricts(
 
   const total = drefs.filter((d) => d.id > 0).length;
   const reported = sameDay.length;
+  const unit = await unitLabel(env, sameDay[0]?.row.retail?.unit ?? null);
 
   const text = [
     `${commodity.nameBn} — ${priceType === "retail" ? "খুচরা" : "পাইকারি"} দরের জেলাভিত্তিক তুলনা`,
@@ -480,6 +501,8 @@ async function compareDistricts(
       text,
       price_date: latestDate,
       price_type: priceType,
+      unit_bn: unit.bn,
+      unit_en: unit.en,
       districts_reporting: reported,
       districts_total: total,
       cheapest: { district_id: cheapest.row.districtId, district: cheapestName, value: cheapest.value },
@@ -516,6 +539,7 @@ async function getTrend(
       : null;
 
   const url = `${ctx.origin.replace(/\/$/, "")}/price/${commodity.slug}/${district.slug}/${last.priceDate}`;
+  const unit = await unitLabel(env, last.retail?.unit ?? null);
   const text = [
     `${commodity.nameBn} — ${district.nameBn}, শেষ ${ordered.length} প্রতিবেদন`,
     `শুরু: ${first.priceDate} খুচরা গড় ${formatBdt(first.retail?.avg)}`,
@@ -535,9 +559,14 @@ async function getTrend(
       points: ordered.map((r) => ({
         date: r.priceDate,
         retail_avg: r.retail?.avg ?? null,
+        retail_min: r.retail?.min ?? null,
+        retail_max: r.retail?.max ?? null,
         wholesale_avg: r.wholesale?.avg ?? null,
         carried_forward: r.carriedForward,
+        is_midpoint: r.retail?.isMidpoint ?? null,
       })),
+      unit_bn: unit.bn,
+      unit_en: unit.en,
       change_pct: change,
       source: ctx.sourceName,
     },
@@ -681,6 +710,7 @@ async function verifyClaim(
       matches,
       claimed_value: claimedValue,
       actual: { min: actualMin, max: actualMax, avg: actual },
+      unit_bn: await unitLabel(env, row.retail!.unit).then((u) => u.bn),
       commodity: { bn: primary.commodity.nameBn, en: primary.commodity.nameEn },
       district: district
         ? { bn: district.nameBn, en: district.nameEn }
