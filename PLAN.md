@@ -47,7 +47,7 @@
 - [x] `/robots.txt` — allow search bots, block training bots
 - [x] `/llms.txt`, `/sitemap.xml`, `/health`, `/verify`, `/api/v1/search`
 - [x] Static assets: `public/logo.svg` (the market-scale mark), `public/app.js` (progressive enhancement)
-- [x] Tests: **58 unit tests** + **53 end-to-end checks**, all green
+- [x] Tests: **110 unit tests** + **53 end-to-end checks**, all green
 - [x] Docs: `README.md`, `docs/DATASET.md`, `docs/DEPLOY-BN.md`
 
 ### The design — "খাতা" (the ledger)
@@ -98,9 +98,13 @@ The hero is a thesis, not a pitch: a live lookup where a person types
 - [ ] Telegram daily digest + price-threshold alerts ← needs the bot as channel admin
 
 ## Phase 4 — Monetisation
+- [x] **Paid tier, first slice** — API key (SHA-256, only the hash is stored) · monthly quota on an
+      O(1) counter · five-minute burst guard · `/api/v1/account` · admin routes `/internal/license/*`
+- [x] **The commercial gate is in the code** — a paid plan cannot be created until `LICENCE_GRANTED`
+      is set, so the licence from DAM/ডিসিম comes before the sale and not after
 - [ ] Lemon Squeezy store (global) + bKash merchant (BD) + Payoneer
-- [ ] Licence keys + server-side metering (MCP `x-mcp-header` SEP-2243)
-- [ ] Tiers: free · commercial licence ৳2–8k/mo · API $49–199/mo · alerts ৳500–1k/mo · bulk export one-off
+- [ ] Server-side metering (MCP `x-mcp-header` SEP-2243)
+- [x] Tiers: free · commercial · api · enterprise
 - [ ] Proprietary layer: index, volatility, cross-district spread, anomaly detection
 
 ## Gates (must pass before building the paid tier)
@@ -249,14 +253,18 @@ the one-line guard that keeps `price_latest` from ever moving backwards in time.
 
 1. **MCP Registry + Connectors Directory** — `server.json` and the guide are
    ready; only the owner's GitHub step is missing.
-2. **Paid tier, first slice** — API key, rate limit, quota, usage view. Built on
-   the free tier; payment integration comes later.
+2. ~~**Paid tier, first slice**~~ — **done 21 Oct**: API key, monthly quota,
+   burst guard, usage view, and the commercial gate in the code.
 3. **B2B outreach** — 40–100 prospects, a personal Bangla email each. Blocked
    only on an email-sending path.
 4. **Archive** — a daily snapshot of the pages and the data, so a crawler's
    first visit is never an empty one.
-5. **Backfill** — left running, quota-capped; `get_price_trend` becomes a real
-   feature at 90 days.
+5. **Backfill** — left running, quota-capped; it now waits for the indexes
+   before it starts, and the worker applies them itself at 00:02 UTC.
+6. **The history cache** — the KV history is still one key, written only by a
+   manual upload. It has to become sharded and maintained by the ingest, or
+   it reaches KV's 25 MB value limit and the site's claim about how far
+   back it reaches stops being true.
 
 **The master prompt** for a top-tier model to take all of this over is in
 `docs/MASTER-PROMPT.md` — it is self-contained, carries the ten inviolable
