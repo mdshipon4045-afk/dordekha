@@ -38,6 +38,7 @@ import {
   writeJob,
 } from "./db";
 import { getAggregates, setMasterSnapshot, toMasterSnapshot } from "./cache";
+import { hasRequiredIndexes } from "./maintenance";
 import type { Env, MasterData, PriceRecord } from "./types";
 
 /**
@@ -241,6 +242,11 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
   // it should be, a backfill runs before the daily refresh.
   const range = await historyRangeCheap(env);
   if (range && range.days < HISTORY_DAYS * 0.8 && !(await backfillPaused(env))) {
+    // A backfill without the indexes reads the whole price table for every
+    // batch of districts. It waits for them instead.
+    if (!(await hasRequiredIndexes(env))) {
+      return { action: "waiting-for-index" };
+    }
     console.log(`history is ${range.days} days — starting a backfill`);
     return { action: "backfill", job: await startBackfill(env) };
   }

@@ -432,17 +432,26 @@ export default {
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // The daily upkeep: the worker applies its own indexes once the D1 read
-    // quota has reset. Without them every read of the price table is a
-    // full scan, and the quota is gone by the afternoon.
-    if (event.cron === "5 0 * * *") {
+    // quota has reset, and refreshes the master data so the cached snapshot
+    // stops being older than the database.
+    if (event.cron === "2 0 * * *") {
       ctx.waitUntil(
         (async () => {
           try {
             const result = await ensureSchema(env);
             if (result.created.length > 0) console.log(`maintenance: created ${result.created.join(", ")}`);
+            if (result.columnsAdded.length > 0) {
+              console.log(`maintenance: added ${result.columnsAdded.join(", ")}`);
+            }
             if (result.failed.length > 0) console.error(`maintenance: failed ${result.failed.join("; ")}`);
           } catch (err) {
             console.error("maintenance failed", err);
+          }
+          try {
+            const master = await refreshMaster(env);
+            console.log(`maintenance: master refreshed (${master.commodities} commodities)`);
+          } catch (err) {
+            console.error("master refresh failed", err);
           }
         })(),
       );

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { REQUIRED_INDEXES, ensureSchema } from "../src/maintenance";
+import { REQUIRED_INDEXES, ensureSchema, hasRequiredIndexes } from "../src/maintenance";
 import type { Env } from "../src/types";
 import { fakeD1, fakeKV } from "./helpers/fake-env";
 
@@ -17,6 +17,21 @@ import { fakeD1, fakeKV } from "./helpers/fake-env";
  */
 
 describe("the worker keeps its own indexes", () => {
+  it("says whether the indexes are in place", async () => {
+    const withIndexes = fakeD1([
+      (sql) =>
+        sql.includes("sqlite_master")
+          ? { results: REQUIRED_INDEXES.map((i) => ({ name: i.name })) }
+          : null,
+    ]);
+    const withoutIndexes = fakeD1([
+      (sql) => (sql.includes("sqlite_master") ? { results: [] } : null),
+    ]);
+
+    expect(await hasRequiredIndexes({ DB: withIndexes.db } as never)).toBe(true);
+    expect(await hasRequiredIndexes({ DB: withoutIndexes.db } as never)).toBe(false);
+  });
+
   it("creates an index that is missing", async () => {
     const d1 = fakeD1([
       (sql) => (sql.includes("sqlite_master") ? { results: [] } : null),

@@ -179,6 +179,38 @@ describe("the per-minute tick does not spend the read budget", () => {
     expect(result.action).toBeTruthy();
   });
 
+  it("does not start a backfill before the indexes are in place", async () => {
+    // A backfill without the indexes reads the whole price table for every
+    // batch of districts, which is how the read budget was spent.
+    stubUpstream();
+    const d1 = d1WithJob(null, 4);
+    // The schema catalogue says the indexes are not there.
+    const original = d1.db.prepare.bind(d1.db);
+    d1.db.prepare = ((sql: string) => {
+      if (sql.includes("sqlite_master")) {
+        return {
+          sql,
+          bind: () => ({
+            first: async () => null,
+            all: async () => ({ results: [] }),
+            run: async () => ({ success: true, meta: { changes: 0 } }),
+          }),
+          first: async () => null,
+          all: async () => ({ results: [] }),
+          run: async () => ({ success: true, meta: { changes: 0 } }),
+        } as unknown as D1PreparedStatement;
+      }
+      return original(sql);
+    }) as typeof d1.db.prepare;
+
+    const kv = fakeKV({ [AGGREGATE_KEY]: aggregates(3) });
+    const env = envWith(d1, kv);
+
+    const result = await cronTick(env);
+
+    expect(result.action).not.toBe("backfill");
+  });
+
   it("verifies a thin history against the database, but only once a day", async () => {
     // The cache says the history is thinner than it should be; the database
     // says it is fine. The tick must pay for that answer once, not once a
