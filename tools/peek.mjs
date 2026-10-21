@@ -1,8 +1,12 @@
 // A quick look at what the live site is actually serving.
 const B = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
 
+// Bengali can be spelled two ways; the feed and this file may differ.
+const cp = (n) => String.fromCodePoint(n);
+const norm = (s) => String(s).split(cp(0x09af) + cp(0x09bc)).join(cp(0x09df));
+
 const checks = [
-  ["home renders", "/", (t) => t.includes("আজকের") && t.includes("বাজারদর")],
+  ["home renders", "/", (t) => norm(t).includes("আজকের") && norm(t).includes("বাজারদর")],
   ["hero figure", "/", (t) => t.includes("ledger-figure")],
   ["statistics strip", "/", (t) => t.includes('class="stats"')],
   ["T-1 note", "/", (t) => t.includes("stamp-note")],
@@ -11,7 +15,8 @@ const checks = [
   ["footer", "/", (t) => t.includes("foot-grid")],
   ["canonical", "/", (t) => t.includes('rel="canonical"')],
   ["JSON-LD Dataset", "/", (t) => t.includes('"@type":"Dataset"')],
-  ["fact page", "/price/onion-new-833/dhaka/2026-10-19", (t) => t.includes("পেঁয়াজ")],
+  ["fact page", "/price/onion-new-833/dhaka/2026-10-19", (t) => norm(t).includes("পেঁয়াজ")],
+  ["fact page json", "/price/onion-new-833/dhaka/2026-10-19.json", (t) => norm(t).includes("পেঁয়াজ")],
 ];
 
 (async () => {
