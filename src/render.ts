@@ -2,43 +2,316 @@
  * Rendering: one canonical set of facts, three representations.
  *
  *   text/html        → humans, and the surface AI crawlers read
- *   text/markdown    → agents that ask for markdown (Cloudflare "Markdown for
- *                      Agents", Vercel content negotiation)
+ *   text/markdown    → agents that ask for markdown
  *   application/json → machines
  *
- * All three carry the same canonical URL and the same numbers. The point is
- * that an assistant can land on exactly one fact and quote it verbatim.
+ * DESIGN DIRECTION — "খাতা" (the ledger)
+ * -----------------------------------------
+ * The visual language comes from the shop ledger this data replaces: a
+ * ruled register with a red margin rule, ink columns, a brass balance
+ * scale, and corners that are square because printed forms have square
+ * corners. It is a cool register-paper ground (not warm cream), deep indigo
+ * (the colour Bengal is named for), the red of ledger ink, and the brass of
+ * a market scale.
  *
- * Two things matter most for being cited, per the 2026 literature:
- *   1. the title must be the question ("আজ পেঁয়াজের দাম কত?");
- *   2. the first paragraph must be the answer, with the numbers in it.
- * Formatting tricks (FAQ blocks, schema.org as a citation tactic) measurably
- * do not help, so we do not use them.
+ * The signature element is "আজকের খাতা" — a live ledger sheet whose last
+ * column is separated by that red rule and stamps every row with whether
+ * the figure was freshly reported or carried forward from the previous day.
+ * Honesty is the product, so the page is built around showing it.
+ *
+ * Two things matter most for being cited: the title must answer the
+ * question, and the first paragraph must contain the numbers.
  */
 
 import { formatBdt, toBanglaDigits } from "./normalize";
+import { LOGO_SVG } from "./brand";
 import type { PriceRowOut } from "./db";
 
 export interface RenderContext {
   origin: string;
   sourceName: string;
   latestDate: string | null;
-  /** ISO timestamp of the render, used for the JSON-LD dateModified. */
   generatedAt: string;
+  /** Count of rows currently stored, for the statistics strip. */
+  rowCount?: number;
+  dayCount?: number;
+  commodityCount?: number;
+  districtCount?: number;
 }
 
 const ESC: Record<string, string> = {
-  "&": "&amp;",
-  "<": "&lt;",
-  ">": "&gt;",
-  '"': "&quot;",
-  "'": "&#39;",
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 };
 
 export function esc(s: string | number | null | undefined): string {
   if (s === null || s === undefined) return "";
   return String(s).replace(/[&<>"']/g, (c) => ESC[c] ?? c);
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Design tokens & base styles
+   ────────────────────────────────────────────────────────────────────────── */
+
+const CSS = `
+:root{
+  --paper:#eef1f7; --paper-2:#ffffff; --paper-3:#e6ebf5; --paper-4:#dfe5f1;
+  --ink:#131a2e; --ink-2:#3a4566; --muted:#6b769a; --faint:#9aa3bd;
+  --rule:#ccd5e8; --rule-soft:#e1e7f2;
+  --red:#b52b2b; --red-soft:#fbecec; --red-line:#e3b8b8;
+  --indigo:#2a3a6b; --indigo-soft:#e7ebf5;
+  --brass:#96702a; --brass-soft:#f6efdd;
+  --green:#2c6b3d; --green-soft:#e6f1e9;
+  --font-display:"Tiro Bangla","Noto Serif Bengali",Georgia,"Times New Roman",serif;
+  --font-body:"Anek Bangla","Hind Siliguri",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --r:3px;
+  --shell:1180px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--font-body);font-size:17px;line-height:1.7;
+  font-weight:380;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--indigo);text-decoration:none;border-bottom:1px solid transparent}
+a:hover{border-bottom-color:currentColor}
+h1,h2,h3{font-family:var(--font-display);font-weight:400;line-height:1.28;letter-spacing:-.01em;margin:0}
+img,svg{max-width:100%}
+code,kbd{font-family:var(--font-mono);font-size:.86em}
+.shell{max-width:var(--shell);margin:0 auto;padding:0 22px}
+
+/* ── masthead ─────────────────────────────────────────────────────────── */
+.masthead{
+  position:sticky;top:0;z-index:50;background:rgba(238,241,247,.92);
+  backdrop-filter:saturate(1.4) blur(10px);border-bottom:1px solid var(--rule);
+}
+.masthead-in{display:flex;align-items:center;gap:26px;height:62px}
+.brand{display:flex;align-items:center;gap:9px;color:var(--ink);font-family:var(--font-display);font-size:20px;border:0}
+.brand:hover{border:0}
+.brand-mark{display:block;width:28px;height:28px;flex:0 0 28px}
+.brand-mark svg{display:block;width:100%;height:100%}
+.brand-sub{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);border-left:1px solid var(--rule);padding-left:9px;margin-left:2px}
+.nav{display:flex;gap:22px;margin-left:auto;align-items:center}
+.nav a{color:var(--ink-2);font-size:15px;font-weight:450;border:0;padding:4px 0}
+.nav a:hover{color:var(--red);border:0}
+.nav-cta{
+  font-family:var(--font-mono);font-size:12px;letter-spacing:.04em;
+  border:1px solid var(--ink);background:var(--ink);color:var(--paper-2);
+  padding:7px 13px;border-radius:var(--r);border-bottom:1px solid var(--ink);
+}
+.nav-cta:hover{background:var(--indigo);border-color:var(--indigo);color:#fff}
+
+/* ── hero ─────────────────────────────────────────────────────────────── */
+.hero{padding:62px 0 40px;border-bottom:1px solid var(--rule)}
+.eyebrow{
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:20px;
+}
+.eyebrow .dot{width:5px;height:5px;background:var(--red);border-radius:50%}
+.hero h1{font-size:clamp(42px,7.4vw,78px);line-height:1.03;letter-spacing:-.025em}
+.hero h1 em{font-style:normal;color:var(--red)}
+.lead{font-size:19px;line-height:1.62;color:var(--ink-2);max-width:60ch;margin:20px 0 0;font-weight:360}
+.lead b{font-weight:600;color:var(--ink)}
+
+/* ── the search module (the hero thesis) ──────────────────────────────── */
+.lookup{
+  margin:34px 0 0;border:1px solid var(--rule);border-left:3px solid var(--red);
+  background:var(--paper-2);border-radius:var(--r);
+  box-shadow:0 1px 0 rgba(19,26,46,.04),0 14px 34px -26px rgba(19,26,46,.4);
+}
+.lookup-label{
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);padding:13px 18px 0;
+}
+.lookup-form{display:flex;gap:0;flex-wrap:wrap;align-items:stretch;padding:9px 10px 11px}
+.lookup-form input{
+  flex:1 1 190px;min-width:0;border:1px solid var(--rule);background:var(--paper);
+  border-radius:var(--r);padding:12px 14px;font-family:var(--font-body);font-size:16.5px;color:var(--ink);
+}
+.lookup-form input::placeholder{color:var(--faint)}
+.lookup-form input:focus{outline:2px solid var(--indigo);outline-offset:1px;background:#fff}
+.lookup-form button{
+  flex:0 0 auto;border:1px solid var(--ink);background:var(--ink);color:var(--paper-2);
+  font-family:var(--font-body);font-size:16px;font-weight:550;padding:12px 22px;border-radius:var(--r);
+  cursor:pointer;margin-left:8px;
+}
+.lookup-form button:hover{background:var(--red);border-color:var(--red)}
+.lookup-answer{padding:0 18px 16px;display:none}
+.lookup-answer.on{display:block}
+.lookup-answer .ans{
+  border-top:1px solid var(--rule-soft);padding-top:14px;display:flex;gap:22px;flex-wrap:wrap;align-items:baseline;
+}
+.lookup-answer .big{font-family:var(--font-display);font-size:30px;color:var(--ink)}
+.lookup-answer .meta{color:var(--muted);font-size:14px}
+.lookup-answer .meta code{background:var(--paper-3);padding:1px 6px;border-radius:var(--r);color:var(--ink-2)}
+.lookup-answer .err{color:var(--red);font-size:15px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 0}
+.chip{
+  font-size:14px;color:var(--ink-2);background:var(--paper-3);border:1px solid var(--rule-soft);
+  padding:5px 11px;border-radius:var(--r);cursor:pointer;
+}
+.chip:hover{background:var(--paper-4);color:var(--ink);border-color:var(--rule)}
+.chip::before{content:"“";color:var(--faint)}
+.chip::after{content:"”";color:var(--faint)}
+
+/* ── statistics strip ─────────────────────────────────────────────────── */
+.stats{
+  display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--rule);
+  border-top:0;background:var(--paper-2);border-radius:0 0 var(--r) var(--r);overflow:hidden;
+}
+.stat{padding:17px 20px;border-right:1px solid var(--rule-soft)}
+.stat:last-child{border-right:0}
+.stat .n{font-family:var(--font-display);font-size:29px;line-height:1.1;color:var(--ink)}
+.stat .n small{font-size:15px;color:var(--muted);font-family:var(--font-body);margin-left:3px}
+.stat .l{font-size:13.5px;color:var(--muted);margin-top:2px}
+
+/* ── sections ─────────────────────────────────────────────────────────── */
+section.band{padding:56px 0;border-bottom:1px solid var(--rule)}
+.sec-head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+.sec-head h2{font-size:clamp(26px,3.6vw,35px)}
+.sec-kicker{font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--red)}
+.sec-note{color:var(--muted);font-size:15.5px;max-width:70ch;margin:10px 0 26px}
+
+/* ── the ledger sheet (signature) ─────────────────────────────────────── */
+.sheet{border:1px solid var(--rule);background:var(--paper-2);border-radius:var(--r);overflow:hidden}
+.sheet-bar{
+  display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:11px 18px;border-bottom:1px solid var(--rule);background:var(--paper-3);
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);
+}
+table.ledger{width:100%;border-collapse:collapse;font-size:15.5px}
+table.ledger th{
+  text-align:left;font-weight:500;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:11px 16px;border-bottom:1px solid var(--rule);background:var(--paper-2);
+  font-family:var(--font-mono);
+}
+table.ledger td{padding:11px 16px;border-bottom:1px solid var(--rule-soft);vertical-align:baseline}
+table.ledger tbody tr:last-child td{border-bottom:0}
+table.ledger tbody tr:hover{background:var(--paper-3)}
+table.ledger .c-item{font-weight:450}
+table.ledger .c-item a{color:var(--ink);border:0}
+table.ledger .c-item a:hover{color:var(--red)}
+table.ledger .c-item .en{color:var(--faint);font-size:13px;margin-left:7px;font-family:var(--font-mono)}
+table.ledger .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.ledger th.n{text-align:right}
+table.ledger .c-prov{
+  border-left:2px solid var(--red-line);font-family:var(--font-mono);font-size:12px;color:var(--muted);
+  white-space:nowrap;width:1%;
+}
+.stamp{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:2px;white-space:nowrap}
+.stamp.fresh{color:var(--green);background:var(--green-soft)}
+.stamp.carry{color:var(--brass);background:var(--brass-soft)}
+.sheet-more{display:block;padding:13px 18px;border-top:1px solid var(--rule);background:var(--paper-3);font-size:14.5px}
+
+/* ── pillars ──────────────────────────────────────────────────────────── */
+.pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--r);overflow:hidden}
+.pillar{background:var(--paper-2);padding:24px 22px}
+.pillar .num{font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--red);margin-bottom:9px}
+.pillar h3{font-size:19px;margin-bottom:8px}
+.pillar p{margin:0;font-size:15px;color:var(--ink-2);line-height:1.62}
+.pillar code{background:var(--paper-3);padding:1px 5px;border-radius:2px;color:var(--ink)}
+
+/* ── movers ───────────────────────────────────────────────────────────── */
+.movers{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--r);overflow:hidden}
+.mover{background:var(--paper-2);padding:20px 20px 18px}
+.mover .c{font-weight:500;margin-bottom:2px}
+.mover .d{font-family:var(--font-mono);font-size:11px;color:var(--faint);margin-bottom:11px}
+.mover .v{display:flex;align-items:baseline;gap:10px}
+.mover .v .now{font-family:var(--font-display);font-size:25px}
+.mover .v .was{color:var(--faint);font-size:14px;text-decoration:line-through;font-variant-numeric:tabular-nums}
+.mover .v .ch{margin-left:auto;font-family:var(--font-mono);font-size:13px;padding:2px 7px;border-radius:2px}
+.ch.up{color:var(--red);background:var(--red-soft)}
+.ch.dn{color:var(--green);background:var(--green-soft)}
+.ch.flat{color:var(--muted);background:var(--paper-3)}
+
+/* ── steps (a real sequence, so numbering is meaningful) ─────────────── */
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:0;border:1px solid var(--rule);border-radius:var(--r);overflow:hidden;background:var(--paper-2)}
+.step{padding:20px 18px;border-right:1px solid var(--rule-soft);position:relative}
+.step:last-child{border-right:0}
+.step .n{font-family:var(--font-mono);font-size:11px;color:var(--red);letter-spacing:.1em;margin-bottom:7px}
+.step h3{font-size:16.5px;margin-bottom:6px;font-family:var(--font-body);font-weight:550;line-height:1.4}
+.step p{font-size:14px;color:var(--ink-2);margin:0;line-height:1.58}
+
+/* ── code ─────────────────────────────────────────────────────────────── */
+pre{
+  background:var(--ink);color:#dde5f4;border-radius:var(--r);padding:16px 18px;overflow-x:auto;
+  font-family:var(--font-mono);font-size:13px;line-height:1.65;margin:0;
+}
+pre .c{color:#8fa3c8}
+pre .k{color:#e0a3a3}
+
+/* ── forms ────────────────────────────────────────────────────────────── */
+.field{
+  display:block;width:100%;border:1px solid var(--rule);background:var(--paper-2);border-radius:var(--r);
+  padding:12px 14px;font-family:var(--font-body);font-size:16.5px;color:var(--ink);
+}
+.field:focus{outline:2px solid var(--indigo);outline-offset:1px}
+.btn{
+  display:inline-block;border:1px solid var(--ink);background:var(--ink);color:var(--paper-2);
+  font-family:var(--font-body);font-size:16px;font-weight:500;padding:12px 22px;border-radius:var(--r);
+  cursor:pointer;border-bottom:1px solid var(--ink);
+}
+.btn:hover{background:var(--red);border-color:var(--red);color:#fff}
+
+/* ── footer ───────────────────────────────────────────────────────────── */
+footer{border-top:2px solid var(--ink);margin-top:20px;background:var(--paper-2)}
+.foot-grid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:34px;padding:44px 0 34px}
+.foot-brand{display:flex;align-items:center;gap:9px;font-family:var(--font-display);font-size:19px;margin-bottom:12px}
+.foot-brand .brand-mark{width:25px;height:25px;flex:0 0 25px}
+.foot p{color:var(--muted);font-size:14.5px;margin:0 0 8px;max-width:34ch}
+.foot h4{font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);margin:0 0 12px;font-weight:500}
+.foot ul{list-style:none;margin:0;padding:0}
+.foot li{margin-bottom:7px}
+.foot li a{color:var(--ink-2);font-size:14.5px}
+.foot li a:hover{color:var(--red)}
+.foot-bar{
+  border-top:1px solid var(--rule);padding:16px 0 26px;display:flex;gap:16px;flex-wrap:wrap;
+  align-items:center;font-family:var(--font-mono);font-size:11.5px;color:var(--faint);letter-spacing:.03em;
+}
+.foot-bar .sep{color:var(--rule)}
+.foot-bar a{color:var(--muted)}
+.foot-bar a:hover{color:var(--red)}
+
+.callout{
+  border:1px solid var(--rule);border-left:3px solid var(--brass);background:var(--brass-soft);
+  border-radius:var(--r);padding:15px 18px;font-size:15px;color:var(--ink-2);
+}
+.callout b{color:var(--ink)}
+
+@media (max-width:900px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .stat:nth-child(2n){border-right:0}
+  .stat:nth-child(-n+2){border-bottom:1px solid var(--rule-soft)}
+  .pillars,.movers{grid-template-columns:1fr}
+  .steps{grid-template-columns:1fr 1fr}
+  .step{border-bottom:1px solid var(--rule-soft)}
+  .foot-grid{grid-template-columns:1fr 1fr}
+}
+@media (max-width:620px){
+  body{font-size:16px}
+  .shell{padding:0 16px}
+  .nav{gap:14px}
+  .nav a:not(.nav-cta){display:none}
+  .brand-sub{display:none}
+  .hero{padding:38px 0 30px}
+  .steps{grid-template-columns:1fr}
+  .foot-grid{grid-template-columns:1fr}
+  .lookup-form button{margin-left:0;margin-top:8px;width:100%}
+  table.ledger{font-size:14px}
+  table.ledger th,table.ledger td{padding:9px 10px}
+  table.ledger .c-item .en{display:none}
+}
+@media (prefers-reduced-motion:no-preference){
+  .ledger-reveal{animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+}
+`;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Page shell
+   ────────────────────────────────────────────────────────────────────────── */
 
 export function layout(opts: {
   title: string;
@@ -64,63 +337,346 @@ export function layout(opts: {
 <meta property="og:url" content="${esc(canonical)}">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="bn_BD">
-<meta name="twitter:card" content="summary">
+<meta property="og:site_name" content="দরদেখা">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/logo.svg">
 <link rel="alternate" type="text/markdown" href="${esc(canonical)}.md">
 <link rel="alternate" type="application/json" href="${esc(canonical)}.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tiro+Bangla:ital@0;1&family=Anek+Bangla:wght@300..800&family=IBM+Plex+Mono:wght@400;500&display=swap">
 ${jsonLdBlock}${opts.extraHead ?? ""}
-<style>
-:root{--ink:#16210f;--muted:#5b6b52;--line:#dfe6d8;--bg:#fbfcf8;--card:#fff;--accent:#1f6f3f;--warn:#8a5a00;--warnbg:#fff8e6}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:"Hind Siliguri","Noto Sans Bengali","SolaimanLipi",system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.65}
-.wrap{max-width:960px;margin:0 auto;padding:20px 18px 64px}
-header.site{border-bottom:2px solid var(--ink);padding-bottom:14px;margin-bottom:26px}
-header.site .brand{font-size:1.5rem;font-weight:700;letter-spacing:-.01em}
-header.site .brand a{color:var(--ink);text-decoration:none}
-header.site .tag{color:var(--muted);font-size:.9rem;margin-top:2px}
-nav.crumbs{font-size:.85rem;color:var(--muted);margin:0 0 14px}
-nav.crumbs a{color:var(--accent)}
-h1{font-size:1.75rem;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
-.answer{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:16px 18px;margin:0 0 22px}
-.answer p{margin:0 0 8px}
-.answer p:last-child{margin:0}
-.meta{color:var(--muted);font-size:.85rem;margin-top:10px}
-table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:0 0 22px;font-size:.95rem}
-th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line)}
-th{background:#f2f5ee;font-weight:600;font-size:.85rem;color:var(--muted);text-transform:none}
-tr:last-child td{border-bottom:none}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
-a{color:var(--accent)}
-.badge{display:inline-block;font-size:.72rem;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:#f6f8f3;white-space:nowrap}
-.badge.warn{color:var(--warn);background:var(--warnbg);border-color:#f0dfae}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin:0 0 22px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:13px 15px}
-.card .n{font-weight:600;margin-bottom:3px}
-.card .p{color:var(--muted);font-size:.88rem}
-section h2{font-size:1.1rem;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
-footer.site{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}
-footer.site a{color:var(--accent)}
-code{background:#f2f5ee;padding:1px 5px;border-radius:4px;font-size:.88em}
-pre{background:#16210f;color:#eaf2e4;padding:14px 16px;border-radius:8px;overflow-x:auto;font-size:.85rem;line-height:1.5}
-pre code{background:none;color:inherit;padding:0}
-</style>
+<style>${CSS}</style>
 </head>
 <body>
-<div class="wrap">
-<header class="site">
-  <div class="brand"><a href="/">দরদেখা</a></div>
-  <div class="tag">বাংলাদেশের সরকারি কৃষি বাজারদর — প্রতিদিন, স্বাচ্ছ, যাচাইযোগ্য</div>
+<a href="#main" class="skip">সরাসরি কনটেন্টে যান</a>
+<header class="masthead">
+  <div class="shell masthead-in">
+    <a class="brand" href="/">
+      <span class="brand-mark">${LOGO_SVG}</span>
+      <span>দরদেখা</span>
+      <span class="brand-sub">market ledger</span>
+    </a>
+    <nav class="nav">
+      <a href="/price">পণ্য</a>
+      <a href="/dataset">ডেটাসেট</a>
+      <a href="/methodology">পদ্ধতি</a>
+      <a href="/api">API</a>
+      <a href="/verify">যাচাই</a>
+      <a class="nav-cta" href="/mcp">MCP</a>
+    </nav>
+  </div>
 </header>
+<main id="main">
 ${body}
-<footer class="site">
-  <p>উৎস: ${esc(ctx.sourceName)} · সর্বশেষ তারিখ: <strong>${esc(ctx.latestDate ?? "—")}</strong> · আপডেট: ${esc(ctx.generatedAt)}</p>
-  <p><a href="/dataset">ডেটাসেট</a> · <a href="/methodology">পদ্ধতি</a> · <a href="/licence">লাইসেন্স</a> · <a href="/api">API</a> · <a href="/llms.txt">llms.txt</a> · <a href="/mcp">MCP</a></p>
+</main>
+<footer>
+  <div class="shell">
+    <div class="foot-grid">
+      <div class="foot">
+        <div class="foot-brand"><span class="brand-mark">${LOGO_SVG}</span><span>দরদেখা</span></div>
+        <p>বাংলাদেশের সরকারি কৃষি বাজারদর, প্রতিদিন — ইউনিট সংশোধিত, উৎসসহ, যাচাইযোগ্য।</p>
+        <p>কোনো সংখ্যা তৈরি করা হয় না। যেখানে উৎসে তথ্য নেই, সেখানে ফাঁকা থাকে।</p>
+      </div>
+      <div class="foot">
+        <h4>ডেটা</h4>
+        <ul>
+          <li><a href="/">আজকের খাতা</a></li>
+          <li><a href="/price">সব পণ্য</a></li>
+          <li><a href="/district/dhaka">ঢাকা জেলা</a></li>
+          <li><a href="/dataset">ডেটাসেট বিবরণ</a></li>
+          <li><a href="/methodology">পদ্ধতি</a></li>
+        </ul>
+      </div>
+      <div class="foot">
+        <h4>ডেভেলপার</h4>
+        <ul>
+          <li><a href="/api">REST API</a></li>
+          <li><a href="/mcp">MCP server</a></li>
+          <li><a href="/licence">লাইসেন্স</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+          <li><a href="/sitemap.xml">sitemap</a></li>
+        </ul>
+      </div>
+      <div class="foot">
+        <h4>যোগাযোগ ও উৎস</h4>
+        <ul>
+          <li><a href="/verify">দাবি যাচাই করুন</a></li>
+          <li><a href="/health">সার্ভিসের অবস্থা</a></li>
+        </ul>
+        <p>উৎস: ${esc(ctx.sourceName)}</p>
+        <p>সর্বশেষ প্রতিবেদন: <strong>${esc(ctx.latestDate ?? "—")}</strong></p>
+      </div>
+    </div>
+    <div class="foot-bar">
+      <span>দরদেখা</span><span class="sep">·</span>
+      <span>উৎস: কৃষি মন্ত্রণালয় / DAM</span><span class="sep">·</span>
+      <span>লাইসেন্স</span><span class="sep">·</span>
+      <span>সর্বশেষ আপডেট ${esc(ctx.generatedAt.slice(0, 16).replace("T", " "))} UTC</span><span class="sep">·</span>
+      <span>উৎস উল্লেখ করে ব্যবহার করুন</span>
+    </div>
+  </div>
 </footer>
-</div>
+<script src="/app.js" defer></script>
 </body>
 </html>`;
 }
 
-/** A single price fact, ready to be rendered. */
+/* ──────────────────────────────────────────────────────────────────────────
+   Home
+   ────────────────────────────────────────────────────────────────────────── */
+
+export interface LedgerRow {
+  commodityBn: string;
+  commodityEn: string;
+  commoditySlug: string;
+  districtBn: string;
+  districtSlug: string;
+  retail: { min: number | null; max: number | null; avg: number | null; unitBn: string } | null;
+  wholesale: { min: number | null; max: number | null; avg: number | null } | null;
+  carriedForward: boolean;
+  date: string;
+  url: string;
+}
+
+export interface MoverRow {
+  commodityBn: string;
+  districtBn: string;
+  now: number | null;
+  was: number | null;
+  changePct: number | null;
+}
+
+export interface HomeData {
+  latestDate: string | null;
+  previousDate: string | null;
+  ledger: LedgerRow[];
+  movers: MoverRow[];
+  carriedPct: number | null;
+  commodityCount: number;
+  districtCount: number;
+  rowCount: number;
+  dayCount: number;
+}
+
+const SAMPLE_QUERIES = [
+  "আজ পেঁয়াজের দাম কত",
+  "আজ ডিমের দাম কত",
+  "আজ চালের দাম কত",
+  "আজ আলুর দাম কত",
+  "আজ সয়াবিন তেলের দাম কত",
+];
+
+export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
+  const title = "আজকের বাজারদর — বাংলাদেশ, প্রতিদিন, সরকারি তথ্য";
+  const description = `বাংলাদেশের ${d.districtCount}টি জেলা ও ${d.commodityCount}টি পণ্যের সরকারি দৈনিক বাজারদর, ইউনিট-সংশোধিত ও ধাপে ধাপে যাচাই করা। সর্বশেষ তারিখ: ${d.latestDate ?? "—"}.`;
+  const canonical = `${ctx.origin.replace(/\/$/, "")}/`;
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Dataset",
+    name: "দরদেখা — বাংলাদেশের দৈনিক বাজারদর",
+    description,
+    url: canonical,
+    creator: { "@type": "Organization", name: "দরদেখা" },
+    isBasedOn: ctx.sourceName,
+    license: `${ctx.origin.replace(/\/$/, "")}/licence`,
+    dateModified: d.latestDate ?? undefined,
+    temporalCoverage: "2025-06/ongoing",
+    spatialCoverage: "Bangladesh",
+    variableMeasured: ["retail price", "wholesale price", "district", "commodity"],
+  };
+
+  const chips = SAMPLE_QUERIES.map((q) => `<button class="chip" type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+
+  const ledgerRows = d.ledger
+    .map(
+      (r, i) => `<tr class="ledger-reveal" style="animation-delay:${Math.min(i * 28, 420)}ms">
+      <td class="c-item"><a href="${esc(r.url)}">${esc(r.commodityBn)}</a><span class="en">${esc(r.commodityEn)}</span></td>
+      <td>${esc(r.districtBn)}</td>
+      <td class="n">${esc(formatBdt(r.retail?.min))}–${esc(formatBdt(r.retail?.max))}</td>
+      <td class="n">${esc(formatBdt(r.retail?.avg))}</td>
+      <td class="n">${esc(formatBdt(r.wholesale?.avg))}</td>
+      <td class="c-prov">${esc(r.date)} <span class="stamp ${r.carriedForward ? "carry" : "fresh"}">${r.carriedForward ? "পূর্বের" : "নতুন"}</span></td>
+    </tr>`,
+    )
+    .join("\n");
+
+  const moverCards = d.movers
+    .map((m) => {
+      const ch = m.changePct ?? 0;
+      const cls = ch > 0.05 ? "up" : ch < -0.05 ? "dn" : "flat";
+      const arrow = ch > 0.05 ? "▲" : ch < -0.05 ? "▼" : "—";
+      return `<div class="mover">
+        <div class="c">${esc(m.commodityBn)}</div>
+        <div class="d">${esc(m.districtBn)}</div>
+        <div class="v">
+          <span class="now">${esc(formatBdt(m.now))}</span>
+          <span class="was">${esc(formatBdt(m.was))}</span>
+          <span class="ch ${cls}">${arrow} ${Math.abs(ch).toFixed(1)}%</span>
+        </div>
+      </div>`;
+    })
+    .join("\n");
+
+  const body = `<section class="hero">
+  <div class="shell">
+    <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
+    <h1>আজকের <em>বাজারদর</em></h1>
+    <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commodityCount}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
+
+    <div class="lookup">
+      <div class="lookup-label">আজ কত টাকা?</div>
+      <form class="lookup-form" id="lookup" role="search" autocomplete="off">
+        <input id="q" name="q" type="search" placeholder="পণ্য ও জেলা — যেমন: পেঁয়াজ ঢাকা" aria-label="পণ্য ও জেলা">
+        <button type="submit">খুঁজুন</button>
+      </form>
+      <div class="lookup-answer" id="answer" aria-live="polite"></div>
+    </div>
+
+    <div class="chips">${chips}</div>
+
+    <div class="stats">
+      <div class="stat"><div class="n">${d.districtCount}<small>টি</small></div><div class="l">জেলা</div></div>
+      <div class="stat"><div class="n">${d.commodityCount}<small>টি</small></div><div class="l">পণ্য</div></div>
+      <div class="stat"><div class="n">${d.dayCount}<small> দিন</small></div><div class="l">আর্কাইভ</div></div>
+      <div class="stat"><div class="n">${d.rowCount.toLocaleString("en-US")}</div><div class="l">তথ্যের সারি</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">আজকের খাতা</span><h2>সরকারি রিপোর্ট, লেখা হয়ে যাচ্ছে</h2></div>
+    <p class="sec-note">নিচের প্রতিটি সারি একটি সরকারি রিপোর্ট থেকে নেওয়া। শেষ কলামে <span class="stamp fresh">নতুন</span> মানে আজ নতুন করে জমা দেওয়া হয়েছে, <span class="stamp carry">পূর্বের</span> মানে উৎস আগের দিনের সংখ্যাই সরিয়ে দিয়েছে।${
+      d.carriedPct !== null
+        ? ` এই প্রতিবেদনে <strong>${d.carriedPct}%</strong> সারি আগের দিনের মান — তাই দাম বদলেছে বলা যায় কেবল নতুন জমা দেওয়া সারি থেকে।`
+        : ""
+    }</p>
+    <div class="sheet">
+      <div class="sheet-bar"><span>খুচরা ও পাইকারি দর · টাকা</span><span>${esc(d.latestDate ?? "")}</span></div>
+      <table class="ledger">
+        <thead><tr><th>পণ্য</th><th>জেলা</th><th class="n">খুচরা</th><th class="n">গড়</th><th class="n">পাইকারি</th><th>অবস্থা</th></tr></thead>
+        <tbody>${ledgerRows || '<tr><td colspan="6">এখনো কোনো তথ্য নেই।</td></tr>'}</tbody>
+      </table>
+      <a class="sheet-more" href="/price">সব ${d.commodityCount}টি পণ্য ও প্রতিটি জেলার দর দেখুন →</a>
+    </div>
+  </div>
+</section>
+
+${
+  d.movers.length
+    ? `<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">পরিবর্তন</span><h2>এক দিনে যা বদলেছে</h2></div>
+    <p class="sec-note">শুধু সেই সারিগুলো দেখানো হয়েছে যেখানে উৎস নতুন করে জমা দিয়েছে — অর্থাৎ আগের দিনের মান পুনরায় বসানো নয়।</p>
+    <div class="movers">${moverCards}</div>
+  </div>
+</section>`
+    : ""
+}
+
+<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">বিশ্বাসযোগ্যতা</span><h2>কেন এই সংখ্যা ভরসা করা যায়</h2></div>
+    <p class="sec-note">সরকারি রিপোর্ট প্রকাশ করে ঠিক যেমন আছে — কিন্তু তিনটি জায়গায় সংশোধন দরকার হয়, না হলে সংখ্যা ভুল বোঝাবে।</p>
+    <div class="pillars">
+      <div class="pillar">
+        <div class="num">০১</div>
+        <h3>ইউনিট ঠিক করা</h3>
+        <p>উৎস "কুইন্টাল" বলে <code>100 kg</code> ধরে সংখ্যা রাখে, অথচ প্রমাণিত কুইন্টাল 37.32 kg। ফলে চালের খুচরা দর ৮০ টাকা/কেজি হলে পাইকারি দর দেখাত ৭২৫০ — খুচরার উপরে, অসম্ভব। সঠিক স্কেলে ৭২.৫ টাকা/কেজি, খুচরার নিচে — বাস্তবসম্মত।</p>
+      </div>
+      <div class="pillar">
+        <div class="num">০২</div>
+        <h3>ফাঁকা থাকে ফাঁকা</h3>
+        <p>কোনো তারিখে কোনো জেলা জমা দেয়নি, সেখানে কোনো সংখ্যা বানানো হয় না। আগের দিনের দর ধরে বসানো হয় না — কারণ সেটা মিথ্যা। যেখানে তথ্য নেই, সেখানে ফাঁকা।</p>
+      </div>
+      <div class="pillar">
+        <div class="num">০৩</div>
+        <h3>পুরোনো মান চিহ্নিত</h3>
+        <p>উৎস প্রায়ই আগের দিনের সংখ্যা হুবহু সরিয়ে দেয়। সেই সারিগুলো আলাদা করে চিহ্নিত থাকে, যাতে পরিবর্তনের গ্রাফ কখনো মিথ্যা না দেখায়।</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">যাচাই</span><h2>দাবি যাচাই করুন</h2></div>
+    <p class="sec-note">কেউ বলছে "পেঁয়াজ ৬০ টাকা" — সত্য কি না দেখে নিন। সরকারি রেকর্ডের সাথে মিলিয়ে দেখানো হবে, সাথে উদ্ধৃতিযোগ্য লিংক।</p>
+    <form class="lookup" method="get" action="/verify" style="margin:0">
+      <div class="lookup-label">আপনার দাবি</div>
+      <div class="lookup-form">
+        <input name="claim" type="search" placeholder="যেমন: পেঁয়াজ ৬০ টাকা ঢাকায়" aria-label="যাচাই করার জন্য দাবি">
+        <button type="submit">যাচাই করুন</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">ডেভেলপার</span><h2>আপনার অ্যাপে নিয়ে যান</h2></div>
+    <p class="sec-note">REST API, CSV এক্সপোর্ট আর MCP server — তিনভাবেই ডেটা নেওয়া যায়। প্রতিটি উত্তরে উৎস, তারিখ আর একটি উদ্ধৃতিযোগ্য URL থাকে, যাতে AI সহকারী উত্তরে লিংক দেখাতে পারে।</p>
+    <pre><code><span class="c"># একটি জেলার আজকের সব দর</span>
+GET /api/v1/latest?district=47
+
+<span class="c"># একটি নির্দিষ্ট পণ্য ও জেলা</span>
+GET /api/v1/price?commodity=পেঁয়াজ&amp;district=ঢাকা
+
+<span class="c"># ইতিহাস, CSV</span>
+GET /api/v1/series.csv?commodity=602&amp;district=47
+
+<span class="c"># MCP server (stateless)</span>
+POST /mcp   →   tools/call { name: "get_market_price", ... }</code></pre>
+  </div>
+</section>
+
+<section class="band">
+  <div class="shell">
+    <div class="sec-head"><span class="sec-kicker">প্রক্রিয়া</span><h2>প্রতিদিন যেভাবে হয়</h2></div>
+    <p class="sec-note">কোনো মানুষের হাত লাগে না — প্রতিটি ধাপ স্বয়ংক্রিয়।</p>
+    <div class="steps">
+      <div class="step"><div class="n">০১</div><h3>উৎস থেকে টানা হয়</h3><p>কৃষি মন্ত্রণালয়ের অনলাইন বাজারদর রিপোর্ট থেকে ৬৪ জেলার রিপোর্ট আসে।</p></div>
+      <div class="step"><div class="n">০২</div><h3>ইউনিট ঠিক হয়</h3><p>পাইকারি দর প্রতি খুচরা-ইউনিটে রূপান্তরিত হয়, যাচাই করে।</p></div>
+      <div class="step"><div class="n">০৩</div><h3>ফাঁকা চিহ্নিত হয়</h3><p>যেখানে উৎসে তথ্য নেই, সেখানে কোনো সংখ্যা থাকে না।</p></div>
+      <div class="step"><div class="n">০৪</div><h3>প্রকাশ ও বিতরণ</h3><p>ওয়েবসাইট, টেলিগ্রাম চ্যানেল, API আর MCP-তে একসাথে প্রকাশিত হয়।</p></div>
+      <div class="step"><div class="n">০৫</div><h3>যাচাই ও সংশোধন</h3><p>প্রতিটি সংখ্যা উদ্ধৃতিযোগ্য লিংকসহ থাকে, ভুল হলে ধরা পড়ে।</p></div>
+    </div>
+  </div>
+</section>`;
+
+  return layout({ title, description, canonical, body, ctx, jsonLd });
+}
+
+export function renderHomeMarkdown(d: HomeData, ctx: RenderContext): string {
+  const lines = [
+    "# দরদেখা — বাংলাদেশের দৈনিক বাজারদর",
+    "",
+    `সর্বশেষ প্রতিবেদন: ${d.latestDate ?? "—"}`,
+    `উৎস: ${ctx.sourceName}`,
+    "",
+    `পরিসংখ্যান: ${d.districtCount} জেলা · ${d.commodityCount} পণ্য · ${d.dayCount} দিন · ${d.rowCount} সারি`,
+    "",
+    "## আজকের খাতা",
+    "",
+    "| পণ্য | জেলা | খুচরা | গড় | পাইকারি | অবস্থা |",
+    "|---|---|---|---|---|---|",
+  ];
+  for (const r of d.ledger) {
+    lines.push(
+      `| ${r.commodityBn} | ${r.districtBn} | ${formatBdt(r.retail?.min)}–${formatBdt(r.retail?.max)} | ${formatBdt(r.retail?.avg)} | ${formatBdt(r.wholesale?.avg)} | ${r.date} ${r.carriedForward ? "(পূর্বের)" : "(নতুন)"} |`,
+    );
+  }
+  lines.push("", `স্থায়ী লিংক: ${ctx.origin.replace(/\/$/, "")}/`, "");
+  return lines.join("\n");
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Per-fact page
+   ────────────────────────────────────────────────────────────────────────── */
+
 export interface PriceFact {
   commodityBn: string;
   commodityEn: string;
@@ -153,7 +709,6 @@ export function priceSentence(f: PriceFact): string {
   return parts.join(", ");
 }
 
-/** Canonical per-fact URL. */
 export function factUrl(origin: string, commoditySlug: string, districtSlug: string, date: string): string {
   return `${origin.replace(/\/$/, "")}/price/${commoditySlug}/${districtSlug}/${date}`;
 }
@@ -172,7 +727,7 @@ export function renderPriceFactHtml(f: PriceFact, ctx: RenderContext): string {
     dateModified: f.date,
     creator: { "@type": "Organization", name: "দরদেখা" },
     isBasedOn: ctx.sourceName,
-    license: "https://dordekha.pages.dev/licence",
+    license: `${ctx.origin.replace(/\/$/, "")}/licence`,
     variableMeasured: ["retail price", "wholesale price"],
     measurementTechnique: "কৃষি মন্ত্রণালয় / DAM অনলাইন বাজারদর প্রতিদিনের রিপোর্ট",
     distribution: {
@@ -182,15 +737,43 @@ export function renderPriceFactHtml(f: PriceFact, ctx: RenderContext): string {
     },
   };
 
-  const body = `<nav class="crumbs"><a href="/">হোম</a> › <a href="/price">পণ্য</a> › ${esc(f.districtBn)} › ${esc(f.date)}</nav>
-<h1>${esc(f.commodityBn)} এর দর ${esc(f.districtBn)} — ${esc(f.date)}</h1>
-<div class="answer">
-  <p><strong>${esc(f.commodityBn)}</strong> এর ${esc(f.date)} তারিখে ${esc(f.districtBn)} জেলায় ${esc(sentence)}।</p>
-  <p class="meta">উৎস: ${esc(ctx.sourceName)} · তারিখ: ${esc(f.date)}</p>
-  ${f.carriedForward ? `<p><span class="badge warn">আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে</span></p>` : ""}
-  ${f.anomaly ? `<p><span class="badge warn">তথ্য-সতর্কতা: ${esc(f.anomaly)}</span></p>` : ""}
-</div>
-<p><a href="${esc(canonical)}.md">Markdown</a> · <a href="${esc(canonical)}.json">JSON</a> · <a href="/price/${esc(f.commodityEn ? "" : "")}">সব পণ্য</a></p>`;
+  const body = `<section class="band" style="border-bottom:0">
+  <div class="shell">
+    <div class="eyebrow"><span class="dot"></span> আজকের খাতা · একটি সারি</div>
+    <h1 style="font-size:clamp(32px,5.4vw,52px)">${esc(f.commodityBn)} এর দর <em style="font-style:normal;color:var(--red)">${esc(f.districtBn)}</em></h1>
+    <p class="lead"><b>${esc(f.commodityBn)}</b> এর ${esc(f.date)} তারিখে ${esc(f.districtBn)} জেলায় ${esc(sentence)}।</p>
+
+    <div class="sheet" style="margin-top:26px">
+      <div class="sheet-bar"><span>${esc(f.date)}</span><span>${esc(ctx.sourceName)}</span></div>
+      <table class="ledger">
+        <thead><tr><th>ধরন</th><th class="n">ন্যূনতম</th><th class="n">সর্বোচ্চ</th><th class="n">গড়</th><th>একক</th></tr></thead>
+        <tbody>
+          <tr><td class="c-item">খুচরা</td><td class="n">${esc(formatBdt(f.retail.min))}</td><td class="n">${esc(formatBdt(f.retail.max))}</td><td class="n">${esc(formatBdt(f.retail.avg))}</td><td class="c-prov">${esc(f.retail.unitBn)}</td></tr>
+          ${
+            f.wholesale
+              ? `<tr><td class="c-item">পাইকারি</td><td class="n">${esc(formatBdt(f.wholesale.min))}</td><td class="n">${esc(formatBdt(f.wholesale.max))}</td><td class="n">${esc(formatBdt(f.wholesale.avg))}</td><td class="c-prov">${esc(f.wholesale.unitBn)}</td></tr>`
+              : `<tr><td class="c-item">পাইকারি</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="c-prov">উৎসে নেই</td></tr>`
+          }
+        </tbody>
+      </table>
+      <div class="sheet-more">
+        ${
+          f.carriedForward
+            ? `<span class="stamp carry">পূর্বের</span> উৎস এই দিনে আগের দিনের সংখ্যাই সরিয়ে দিয়েছে — নতুন করে কেউ জমা দেয়নি।`
+            : `<span class="stamp fresh">নতুন</span> এই সংখ্যাগুলো উৎসে এই দিনে নতুন করে জমা দেওয়া হয়েছে।`
+        }
+        ${f.anomaly ? `<br><span class="stamp carry">সতর্কতা</span> ${esc(f.anomaly)}` : ""}
+      </div>
+    </div>
+
+    <p style="margin-top:22px;font-size:15px">
+      <a href="${esc(canonical)}.md">Markdown</a> ·
+      <a href="${esc(canonical)}.json">JSON</a> ·
+      <a href="/price">সব পণ্য</a> ·
+      <a href="/verify">দাবি যাচাই করুন</a>
+    </p>
+  </div>
+</section>`;
 
   return layout({ title, description: `${f.commodityBn} ${f.districtBn} ${f.date}: ${sentence}`, canonical, body, ctx, jsonLd });
 }
@@ -243,31 +826,32 @@ export function renderPriceFactJson(f: PriceFact, ctx: RenderContext): unknown {
     source: { name: ctx.sourceName, url: "https://moa-services.com/agri-service" },
     canonical_url: f.url,
     retrieved_at: ctx.generatedAt,
-    licence: "https://dordekha.pages.dev/licence",
+    licence: `${ctx.origin.replace(/\/$/, "")}/licence`,
   };
 }
 
-/** Commodity page: latest snapshot across districts + 30-day trend. */
+/* ──────────────────────────────────────────────────────────────────────────
+   Commodity page
+   ────────────────────────────────────────────────────────────────────────── */
+
 export interface CommodityPageData {
   commodity: { id: number; bn: string; en: string; slug: string; groupBn: string };
   date: string | null;
   districtRows: (PriceRowOut & { districtNameBn: string; districtNameEn: string; districtSlug: string })[];
   history: { date: string; retailAvg: number | null; wholesaleAvg: number | null }[];
-  national: { date: string; retailAvg: number | null; wholesaleAvg: number | null }[];
 }
 
 export function renderCommodityHtml(d: CommodityPageData, ctx: RenderContext): string {
-  const title = `আজ ${d.commodity.bn} এর বাজারদর — সব জেলা`;
+  const title = `${d.commodity.bn} এর বাজারদর — সব জেলা, ${d.date ?? ""}`;
   const canonical = `${ctx.origin.replace(/\/$/, "")}/price/${d.commodity.slug}`;
 
   const withData = d.districtRows.filter((r) => r.retail?.avg != null);
   const avgRetail = withData.length
     ? withData.reduce((s, r) => s + (r.retail?.avg ?? 0), 0) / withData.length
     : null;
-
   const summary = withData.length
-    ? `আজ (${d.date ?? "—"}) ${d.commodity.bn} এর জেলা-ভিত্তিক খুচরা দর জাতীয় গড় ${formatBdt(avgRetail)} টাকা; ${withData.length}টি জেলা থেকে তথ্য এসেছে।`
-    : `এখনো ${d.commodity.bn} এর জেলা-ভিত্তিক দর প্রকাশ করা হয়নি।`;
+    ? `${d.commodity.bn} এর ${d.date ?? "—"} তারিখে জেলা-ভিত্তিক খুচরা দর জাতীয় গড় ${formatBdt(avgRetail)} টাকা; ${withData.length}টি জেলা থেকে তথ্য এসেছে।`
+    : `${d.commodity.bn} এর জেলা-ভিত্তিক দর এখনো প্রকাশ করা হয়নি।`;
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -277,7 +861,7 @@ export function renderCommodityHtml(d: CommodityPageData, ctx: RenderContext): s
     url: canonical,
     creator: { "@type": "Organization", name: "দরদেখা" },
     isBasedOn: ctx.sourceName,
-    license: "https://dordekha.pages.dev/licence",
+    license: `${ctx.origin.replace(/\/$/, "")}/licence`,
     variableMeasured: ["retail price", "wholesale price", "district"],
     dateModified: d.date ?? undefined,
   };
@@ -285,30 +869,33 @@ export function renderCommodityHtml(d: CommodityPageData, ctx: RenderContext): s
   const rows = d.districtRows
     .map(
       (r) => `<tr>
-      <td><a href="/price/${esc(d.commodity.slug)}/${esc(r.districtSlug)}">${esc(r.districtNameBn)}</a></td>
-      <td class="num">${esc(formatBdt(r.retail?.min))}–${esc(formatBdt(r.retail?.max))}</td>
-      <td class="num">${esc(formatBdt(r.retail?.avg))}</td>
-      <td class="num">${esc(formatBdt(r.wholesale?.avg))}</td>
-      <td>${r.carriedForward ? '<span class="badge warn">পূর্বের মান</span>' : ""}${r.anomaly ? ' <span class="badge warn">সতর্কতা</span>' : ""}</td>
+      <td class="c-item"><a href="/price/${esc(d.commodity.slug)}/${esc(r.districtSlug)}">${esc(r.districtNameBn)}</a></td>
+      <td class="n">${esc(formatBdt(r.retail?.min))}–${esc(formatBdt(r.retail?.max))}</td>
+      <td class="n">${esc(formatBdt(r.retail?.avg))}</td>
+      <td class="n">${esc(formatBdt(r.wholesale?.avg))}</td>
+      <td class="c-prov">${esc(r.priceDate)} ${r.carriedForward ? '<span class="stamp carry">পূর্বের</span>' : '<span class="stamp fresh">নতুন</span>'}</td>
     </tr>`,
     )
     .join("\n");
 
-  const body = `<nav class="crumbs"><a href="/">হোম</a> › <a href="/price">পণ্য</a> › ${esc(d.commodity.bn)}</nav>
-<h1>${esc(d.commodity.bn)} এর বাজারদর — ${esc(d.date ?? "—")}</h1>
-<div class="answer">
-  <p>${esc(summary)}</p>
-  <p class="meta">গ্রুপ: ${esc(d.commodity.groupBn)} · উৎস: ${esc(ctx.sourceName)}</p>
-</div>
-<section>
-<h2>জেলা অনুযায়ী দর</h2>
-<table>
-<thead><tr><th>জেলা</th><th>খুচরা (ন্যূনতম–সর্বোচ্চ)</th><th>খুচরা গড়</th><th>পাইকারি গড়</th><th>নোট</th></tr></thead>
-<tbody>${rows || '<tr><td colspan="5">কোনো তথ্য নেই</td></tr>'}</tbody>
-</table>
-</section>
-${renderTrendBlock(d)}
-<p><a href="${esc(canonical)}.md">Markdown</a> · <a href="${esc(canonical)}.json">JSON</a></p>`;
+  const body = `<section class="band" style="border-bottom:0">
+  <div class="shell">
+    <div class="eyebrow"><span class="dot"></span> ${esc(d.commodity.groupBn)} · আজকের খাতা</div>
+    <h1 style="font-size:clamp(32px,5.4vw,52px)">${esc(d.commodity.bn)} এর বাজারদর</h1>
+    <p class="lead">${esc(summary)}</p>
+
+    <div class="sheet" style="margin-top:26px">
+      <div class="sheet-bar"><span>জেলা অনুযায়ী · টাকা</span><span>${esc(d.date ?? "")}</span></div>
+      <table class="ledger">
+        <thead><tr><th>জেলা</th><th class="n">খুচরা</th><th class="n">গড়</th><th class="n">পাইকারি</th><th>অবস্থা</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="5">কোনো তথ্য নেই</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    ${renderTrendBlock(d)}
+    <p style="margin-top:22px;font-size:15px"><a href="${esc(canonical)}.md">Markdown</a> · <a href="${esc(canonical)}.json">JSON</a> · <a href="/price">সব পণ্য</a></p>
+  </div>
+</section>`;
 
   return layout({ title, description: summary, canonical, body, ctx, jsonLd });
 }
@@ -320,23 +907,21 @@ function renderTrendBlock(d: CommodityPageData): string {
   const last = pts[pts.length - 1]?.retailAvg ?? 0;
   const change = first > 0 ? ((last - first) / first) * 100 : 0;
   const dir = change > 0 ? "বেড়েছে" : change < 0 ? "কমেছে" : "পরিবর্তন হয়নি";
-  return `<section>
-<h2>শেষ ${pts.length} দিনের ধারা</h2>
-<div class="answer">
-  <p>গত ${pts.length} প্রতিবেদনে ${esc(d.commodity.bn)} এর জেলা-গড় খুচরা দর ${formatBdt(first)} টাকা থেকে ${formatBdt(last)} টাকা হয়েছে — ${esc(dir)} ${Math.abs(change).toFixed(1)}%।</p>
-</div>
-<table>
-<thead><tr><th>তারিখ</th><th>খুচরা গড়</th><th>পাইকারি গড়</th></tr></thead>
-<tbody>${pts
-  .slice()
-  .reverse()
-  .map(
-    (p) =>
-      `<tr><td>${esc(p.date)}</td><td class="num">${esc(formatBdt(p.retailAvg))}</td><td class="num">${esc(formatBdt(p.wholesaleAvg))}</td></tr>`,
-  )
-  .join("\n")}</tbody>
-</table>
-</section>`;
+  return `<div class="sheet" style="margin-top:22px">
+      <div class="sheet-bar"><span>শেষ ${pts.length} প্রতিবেদনের ধারা</span><span>${change > 0 ? "▲" : change < 0 ? "▼" : "—"} ${Math.abs(change).toFixed(1)}%</span></div>
+      <table class="ledger">
+        <thead><tr><th>তারিখ</th><th class="n">খুচরা গড়</th><th class="n">পাইকারি গড়</th></tr></thead>
+        <tbody>${pts
+          .slice()
+          .reverse()
+          .map(
+            (p) =>
+              `<tr><td class="c-item">${esc(p.date)}</td><td class="n">${esc(formatBdt(p.retailAvg))}</td><td class="n">${esc(formatBdt(p.wholesaleAvg))}</td></tr>`,
+          )
+          .join("\n")}</tbody>
+      </table>
+    </div>
+    <p style="margin-top:14px;font-size:14.5px;color:var(--muted)">গত ${pts.length} প্রতিবেদনে জেলা-গড় খুচরা দর ${formatBdt(first)} থেকে ${formatBdt(last)} টাকা — ${esc(dir)} ${Math.abs(change).toFixed(1)}%।</p>`;
 }
 
 export function renderCommodityMarkdown(d: CommodityPageData, ctx: RenderContext): string {
@@ -359,75 +944,4 @@ export function renderCommodityMarkdown(d: CommodityPageData, ctx: RenderContext
   return lines.join("\n");
 }
 
-/** Home page. */
-export function renderHomeHtml(
-  data: {
-    latestDate: string | null;
-    headline: { bn: string; value: string; unit: string }[];
-    groups: { id: number; bn: string; count: number }[];
-    commodityCount: number;
-    districtCount: number;
-    daysCovered: number;
-  },
-  ctx: RenderContext,
-): string {
-  const title = "আজকের বাজারদর — বাংলাদেশ, প্রতিদিন, সরকারি তথ্য";
-  const description = `বাংলাদেশের ${data.districtCount}টি জেলা ও ${data.commodityCount}টি পণ্যের সরকারি দৈনিক বাজারদর, ইউনিট-সংশোধিত ও ধাপে ধাপে যাচাই করা। সর্বশেষ তারিখ: ${data.latestDate ?? "—"}.`;
-  const canonical = `${ctx.origin.replace(/\/$/, "")}/`;
-
-  const jsonLd = {
-    "@context": "https://schema.org",
-    "@type": "Dataset",
-    name: "দরদেখা — বাংলাদেশের দৈনিক বাজারদর",
-    description,
-    url: canonical,
-    creator: { "@type": "Organization", name: "দরদেখা" },
-    isBasedOn: ctx.sourceName,
-    license: "https://dordekha.pages.dev/licence",
-    dateModified: data.latestDate ?? undefined,
-    variableMeasured: ["retail price", "wholesale price"],
-  };
-
-  const cards = data.headline
-    .map(
-      (h) =>
-        `<div class="card"><div class="n">${esc(h.bn)}</div><div class="p">${esc(h.value)} টাকা / ${esc(h.unit)}</div></div>`,
-    )
-    .join("\n");
-
-  const groupLinks = data.groups
-    .map((g) => `<div class="card"><div class="n">${esc(g.bn)}</div><div class="p">${g.count}টি পণ্য</div></div>`)
-    .join("\n");
-
-  const body = `<h1>আজকের বাজারদর — বাংলাদেশ</h1>
-<div class="answer">
-  <p>এই সাইটে প্রতিদিন কৃষি মন্ত্রণালয়ের (কৃষি বিপণন অধিদপ্তর) অনলাইন বাজারদর রিপোর্ট থেকে ${data.districtCount}টি জেলার খুচরা ও পাইকারি দর দেখানো হয়, ইউনিট সংশোধন করে এবং প্রতিটি তথ্যের উৎস ও তারিখ উল্লেখ করে। সর্বশেষ প্রতিবেদন: <strong>${esc(data.latestDate ?? "—")}</strong>।</p>
-  <p class="meta">পরিসংখ্যান: ${data.commodityCount}টি পণ্য · ${data.districtCount}টি জেলা · ${data.daysCovered} দিনের ইতিহাস</p>
-</div>
-<section><h2>আজকের কয়েকটি দর</h2><div class="grid">${cards}</div></section>
-<section><h2>পণ্যের ধরন</h2><div class="grid">${groupLinks}</div></section>
-<section>
-<h2>যেভাবে ব্যবহার করবেন</h2>
-<p>এই তথ্য যেকোনো AI সহকারী (ChatGPT, Claude, Perplexity) নিজে টেনে নিতে পারে — <a href="/mcp">MCP server</a> দেখুন। মানব-পাঠযোগ্য URL-এর পাশাপাশি <code>text/markdown</code> ও <code>application/json</code> সংস্করণও পাওয়া যায়।</p>
-<p>প্রতিটি পৃষ্ঠার URL-এর শেষে <code>.md</code> বা <code>.json</code> যোগ করে সেই একই তথ্য পড়তে বা পার্স করতে পারবেন।</p>
-</section>`;
-
-  return layout({ title, description, canonical, body, ctx, jsonLd });
-}
-
-export function renderHomeMarkdown(data: { latestDate: string | null; headline: { bn: string; value: string; unit: string }[] }, ctx: RenderContext): string {
-  const lines = [
-    "# দরদেখা — বাংলাদেশের দৈনিক বাজারদর",
-    "",
-    `সর্বশেষ প্রতিবেদন: ${data.latestDate ?? "—"}`,
-    `উৎস: ${ctx.sourceName}`,
-    "",
-    "## আজকের কয়েকটি দর",
-    "",
-  ];
-  for (const h of data.headline) lines.push(`- **${h.bn}**: ${h.value} টাকা / ${h.unit}`);
-  lines.push("", "স্থায়ী লিংক: " + ctx.origin, "");
-  return lines.join("\n");
-}
-
-export { toBanglaDigits };
+export { toBanglaDigits, formatBdt };

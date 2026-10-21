@@ -71,6 +71,90 @@ export function resolve<T extends Resolvable>(list: T[], query: string, limit = 
 }
 
 /**
+ * Choose between the candidates that matched one keyword.
+ *
+ * Ranking, in order:
+ *   1. coverage — how much published data the candidate actually has
+ *      (a variety that appears in no report is never the right answer);
+ *   2. name length — the most generic name wins, so "পেঁয়াজ" beats
+ *      "পেঁয়াজ (নতুন)" for the bare word "পেঁয়াজ";
+ *   3. id — so the choice is deterministic.
+ */
+export function pickByCoverage<T extends Resolvable>(
+  candidates: T[],
+  coverage?: Map<number, number>,
+): { match: T | null; alternatives: T[] } {
+  if (candidates.length === 0) return { match: null, alternatives: [] };
+  const ranked = [...candidates].sort((a, b) => {
+    const ca = coverage?.get(a.id) ?? 0;
+    const cb = coverage?.get(b.id) ?? 0;
+    if (cb !== ca) return cb - ca;
+    const la = a.nameBn.length;
+    const lb = b.nameBn.length;
+    if (la !== lb) return la - lb;
+    return a.id - b.id;
+  });
+  return { match: ranked[0]!, alternatives: ranked.slice(1, 5) };
+}
+
+/**
+ * Candidates whose name contains the keyword, together with a match score.
+ * Both sides are folded, because the feed and the user's keyboard spell the
+ * same Bengali word two different ways.
+ *
+ * The match must end on a word boundary. Without that rule "চাল" also
+ * matches "চালকুমড়া" (corn) — a different product that merely starts with
+ * the same letters.
+ */
+export function candidatesFor<T extends Resolvable>(list: T[], keywords: string[]): T[] {
+  const out = new Map<number, T>();
+  for (const k of keywords) {
+    const key = foldForCompare(k);
+    if (key.length < 2) continue;
+    for (const item of list) {
+      const bn = foldForCompare(item.nameBn);
+      const en = foldForCompare(item.nameEn);
+      if (!bn) continue;
+      if (hasWord(bn, key) || hasWord(en, key)) out.set(item.id, item);
+      // An English head word ("potato" in "Potato (Local)") also counts.
+      const head = en.split(/[\s\-_/(),]+/).find((w) => w.length >= 3);
+      if (head && key.includes(head)) out.set(item.id, item);
+    }
+  }
+  return [...out.values()];
+}
+
+/** Does `text` contain `needle` on a word boundary? */
+function hasWord(text: string, needle: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(needle, from);
+    if (at < 0) return false;
+    const after = text[at + needle.length];
+    if (after === undefined || after === " " || after === "-" || after === "(" || after === "/" || after === ",") {
+      return true;
+    }
+    from = at + 1;
+  }
+}
+
+/**
+ * Order tied candidates by how much data they actually have.
+ *
+ * "চাল" matches 27 rice varieties but only some appear in a given
+ * district's report. Answering with one of the empty ones would be a
+ * confident wrong answer, so coverage wins over id order.
+ */
+export function rankByCoverage<T extends Resolvable>(tied: T[], coverage: Map<number, number>): T[] {
+  return [...tied].sort((a, b) => {
+    const ca = coverage.get(a.id) ?? 0;
+    const cb = coverage.get(b.id) ?? 0;
+    if (cb !== ca) return cb - ca;
+    return a.id - b.id;
+  });
+}
+
+/**
  * Extract the commodity and district mentioned in a free-text claim.
  *
  * Works by looking for each known name *inside* the claim, which is the

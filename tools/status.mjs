@@ -50,7 +50,13 @@ line("mcp tools", tools.join(", "), tools.length === 4);
 const p = await j(
   `/api/v1/price?commodity=${encodeURIComponent("পেঁয়াজ")}&district=${encodeURIComponent("ঢাকা")}`,
 );
-line("live fact", p.body.retail ? `${p.body.commodity?.bn} ${p.body.district?.bn} ${p.body.price_date}: retail ${p.body.retail.avg}, wholesale ${p.body.wholesale?.avg}` : p.body.error, Boolean(p.body.retail));
+line(
+  "live fact",
+  p.body.retail
+    ? `${p.body.commodity?.name_bn ?? "?"} ${p.body.district?.name_bn ?? "?"} ${p.body.price_date}: retail ${p.body.retail.avg}, wholesale ${p.body.wholesale?.avg}`
+    : p.body.error,
+  Boolean(p.body.retail),
+);
 
 const r = await j("/robots.txt");
 const rOk = r.body.includes("User-agent: OAI-SearchBot") && r.body.includes("User-agent: GPTBot");

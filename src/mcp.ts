@@ -22,7 +22,7 @@
 import { latestForCommodity, latestForDistrict, historyFor, latestDate, commodityCoverage } from "./db";
 import { formatBdt } from "./normalize";
 import { matchScore, foldForCompare, bnIncludes, toAsciiDigits } from "./bn";
-import { resolve, findInText, type Resolution, type Resolvable } from "./resolve";
+import { resolve, findInText, rankByCoverage, type Resolution, type Resolvable } from "./resolve";
 import { commoditySlug, districtSlug } from "./slug";
 import { factUrl, priceSentence, type PriceFact, type RenderContext } from "./render";
 import type { Env } from "./types";
@@ -262,12 +262,7 @@ async function resolveWithCoverage<T extends Resolvable>(
     env.DB,
     res.tied.map((t) => t.id),
   );
-  const ranked = [...res.tied].sort((a, b) => {
-    const ca = coverage.get(a.id) ?? 0;
-    const cb = coverage.get(b.id) ?? 0;
-    if (cb !== ca) return cb - ca;
-    return a.id - b.id;
-  });
+  const ranked = rankByCoverage(res.tied, coverage);
 
   return {
     match: ranked[0]!,

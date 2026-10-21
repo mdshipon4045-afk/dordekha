@@ -26,20 +26,31 @@
 - [x] Project scaffold: TS + Vitest 4 + Wrangler 4.151, git initialised
 - [x] `src/units.ts` — unit normalisation: measured factor table + arithmetic derivation + plausibility repair
 - [x] `src/normalize.ts` — Bangla numerals, carry-forward detection, anomaly flags
-- [x] `src/bn.ts` — Bengali nukta folding (decomposed vs precomposed) + match scoring
-- [x] `src/resolve.ts` — name → commodity/district resolution, ambiguity reporting, coverage tie-break
+- [x] `src/bn.ts` — Bengali nukta folding, question-word stripping, match scoring
+- [x] `src/resolve.ts` — name → commodity/district resolution, word-boundary matching, coverage ranking
 - [x] `src/moa.ts` — upstream client (retry, timeout, no cookies/CSRF)
 - [x] `migrations/0001_init.sql` — D1 schema (price_daily, price_latest, ingest_run, license, usage, alerts, content_page)
-- [x] `src/ingest.ts` — self-chaining cron job (10 ms CPU budget on the free plan)
+- [x] `src/ingest.ts` — cron-driven ingest (one batch per tick, position in D1)
 - [x] `src/db.ts` — D1 access layer, chunked upsert under the bound-parameter limit
-- [x] `src/api.ts` behaviour in `src/index.ts` — REST: /latest, /price, /series.csv, /districts, /commodities
-- [x] `src/render.ts` — server-rendered Bangla HTML, per-fact permalinks, JSON-LD Dataset
+- [x] `src/render.ts` + `src/pages.ts` — server-rendered Bangla HTML, per-fact permalinks, JSON-LD Dataset
 - [x] Content negotiation: `Accept: text/markdown` / `application/json`, `Vary: Accept`, `.md` / `.json` sibling URLs
 - [x] `src/mcp.ts` — MCP JSON-RPC: `server/discover`, `tools/list`, `tools/call`; every result carries a citable `url`
-- [x] `/robots.txt` — allow search bots (OAI-SearchBot, Claude-SearchBot, PerplexityBot, Googlebot…), block training bots
-- [x] `/llms.txt`, `/sitemap.xml`, `/health`, `/verify`
-- [x] Tests: **33 unit tests** + **53 end-to-end checks**, all green
+- [x] `src/telegram.ts` — daily digest publisher, carry-forward aware
+- [x] `/robots.txt` — allow search bots, block training bots
+- [x] `/llms.txt`, `/sitemap.xml`, `/health`, `/verify`, `/api/v1/search`
+- [x] Static assets: `public/logo.svg` (the market-scale mark), `public/app.js` (progressive enhancement)
+- [x] Tests: **58 unit tests** + **53 end-to-end checks**, all green
 - [x] Docs: `README.md`, `docs/DATASET.md`, `docs/DEPLOY-BN.md`
+
+### The design — "খাতা" (the ledger)
+The visual language comes from the shop ledger this data replaces: a ruled
+register with a red margin rule, indigo ink, brass, square corners. The
+signature element is "আজকের খাতা" — a live ledger sheet whose last column
+is separated by the red rule and stamps every row নতুন / পূর্বের. Honesty
+is the product, so the page is built around showing it.
+
+The hero is a thesis, not a pitch: a live lookup where a person types
+"পেঁয়াজ ঢাকা" and gets the cited answer in three seconds.
 
 ### Measured findings from the live pipeline
 - 11,603 rows for 3 report days (64 districts)

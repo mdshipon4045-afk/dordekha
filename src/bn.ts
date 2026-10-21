@@ -59,6 +59,52 @@ export function toAsciiDigits(input: string): string {
   return out;
 }
 
+/**
+ * Words that carry no meaning in a price question.
+ *
+ * "আজ পেঁয়াজের দাম কত" carries one piece of information — পেঁয়াজ — and
+ * everything else is question scaffolding. Stripping it is what lets a
+ * commodity be found inside a sentence rather than matched against it.
+ */
+const QUESTION_WORDS = new Set([
+  "আজ", "আজকের", "আজকি", "এখন", "এখনকার", "কত", "কি", "কী",
+  "দাম", "দর", "বাজার", "বাজারদর", "মূল্য", "টাকা", "টাকার", "হয়", "হলো",
+  "করে", "করার", "কার", "দেয়", "দেওয়া", "দিয়েছে", "দিয়ে", "দিলে", "থাকে",
+  "কোন", "কোনো", "কোনটা", "খুঁজুন", "খুঁজে", "আছে", "নেই", "জানতে", "জানান",
+  "আমি", "আমার", "আপনি", "আপনার", "আমরা", "আমাদের", "আপনাদের", "ওরা", "তারা", "তার",
+  "এবং", "ও", "বা", "মধ্যে", "থেকে", "উপরে", "নিচে", "প্রতি", "হিসেবে",
+  "এর", "র", "টি", "টা", "এক", "আর", "সেই", "এই", "যে", "তা", "তারা",
+]);
+
+/**
+ * Pull the meaningful nouns out of a price question.
+ *
+ * Returns the tokens that could name a commodity or a district, in the
+ * order they appeared.
+ */
+export function extractKeywords(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const folded = foldForCompare(text);
+  const raw = String(text).split(/\s+/);
+  const out: string[] = [];
+
+  for (const word of raw) {
+    const w = foldForCompare(word).replace(/[?!,।\.]/g, "");
+    if (!w) continue;
+    if (QUESTION_WORDS.has(w)) continue;
+    // A bare number is a price, not a name. "৬০ কেজি" must not pull in a
+    // commodity that happens to have "60" in its own name.
+    if (/^[\d০-৯.,]+$/.test(w)) continue;
+    // A possessive suffix ("পেঁয়াজের", "আলুর") should still match the bare
+    // noun, so the stem is what gets kept — not the suffixed form.
+    let stem = w;
+    if (w.endsWith("ের") && w.length > 3) stem = w.slice(0, -2);
+    else if (w.endsWith("র") && w.length > 3) stem = w.slice(0, -1);
+    if (stem.length >= 2 && !QUESTION_WORDS.has(stem)) out.push(stem);
+  }
+  return [...new Set(out)];
+}
+
 /** Case-insensitive comparison form for Bengali + Latin text. */
 export function foldForCompare(input: string | null | undefined): string {
   return normalizeBn(input).toLowerCase();

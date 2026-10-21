@@ -5,6 +5,7 @@
  */
 
 import type { MasterData, PriceRecord } from "./types";
+import { commoditySlug, districtSlug } from "./slug";
 
 export interface DbEnv {
   DB: D1Database;
@@ -193,7 +194,8 @@ export async function commodityCoverage(db: D1Database, ids: number[]): Promise<
   const { results } = await db
     .prepare(
       `SELECT commodity_id, COUNT(*) AS c FROM price_latest
-        WHERE commodity_id IN (${placeholders}) GROUP BY commodity_id`,
+        WHERE commodity_id IN (${placeholders}) AND retail_avg IS NOT NULL
+        GROUP BY commodity_id`,
     )
     .bind(...ids)
     .all();
@@ -409,6 +411,175 @@ export async function recordIngestRun(
       run.error ?? null,
     )
     .run();
+}
+
+/* ── Home page data ──────────────────────────────────────────────────────── */
+
+export interface LedgerRowDb {
+  commodityId: number;
+  districtId: number;
+  commodityBn: string;
+  commodityEn: string;
+  commoditySlug: string;
+  districtBn: string;
+  districtEn: string;
+  districtSlug: string;
+  retail: { min: number | null; max: number | null; avg: number | null; unitBn: string } | null;
+  wholesale: { min: number | null; max: number | null; avg: number | null } | null;
+  carriedForward: boolean;
+  date: string;
+}
+
+export interface MoverRowDb {
+  commodityBn: string;
+  districtBn: string;
+  now: number | null;
+  was: number | null;
+  changePct: number | null;
+}
+
+/** The ledger rows for the home page: the most recent report, in one district. */
+export async function ledgerRows(db: D1Database, districtId: number, limit = 14): Promise<LedgerRowDb[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT c.id AS cid, c.name_bn AS cbn, c.name_en AS cen, d.id AS did, d.name_bn AS dbn, d.name_en AS den,
+              p.retail_min, p.retail_max, p.retail_avg, p.wholesale_min, p.wholesale_max, p.wholesale_avg,
+              p.carried_forward, p.price_date, u.name_bn AS unit
+         FROM price_latest p
+         JOIN commodity c ON c.id = p.commodity_id
+         JOIN district d ON d.id = p.district_id
+         LEFT JOIN unit u ON u.id = p.retail_unit
+        WHERE p.district_id = ? AND p.upazila_id = 0
+        ORDER BY p.group_id, c.name_bn
+        LIMIT ?`,
+    )
+    .bind(districtId, limit)
+    .all();
+
+  return (results ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+    const cid = Number(row.cid);
+    const did = Number(row.did);
+    return {
+      commodityId: cid,
+      districtId: did,
+      commodityBn: String(row.cbn ?? ""),
+      commodityEn: String(row.cen ?? ""),
+      commoditySlug: commoditySlug(String(row.cbn ?? ""), String(row.cen ?? ""), cid),
+      districtBn: String(row.dbn ?? ""),
+      districtEn: String(row.den ?? ""),
+      districtSlug: districtSlug(String(row.dbn ?? ""), String(row.den ?? ""), did),
+      retail: {
+        min: num(row.retail_min),
+        max: num(row.retail_max),
+        avg: num(row.retail_avg),
+        unitBn: String(row.unit ?? "কেজি"),
+      },
+      wholesale: {
+        min: num(row.wholesale_min),
+        max: num(row.wholesale_max),
+        avg: num(row.wholesale_avg),
+      },
+      carriedForward: Number(row.carried_forward) === 1,
+      date: String(row.price_date ?? ""),
+    };
+  });
+}
+
+/**
+ * The biggest genuine moves between the two most recent report dates.
+ *
+ * Only rows that were freshly reported on the later date are considered:
+ * a value the upstream merely copied forward did not move.
+ */
+export async function movers(db: D1Database, limit = 6): Promise<MoverRowDb[]> {
+  const dates = await db
+    .prepare(`SELECT DISTINCT price_date FROM price_daily WHERE district_id > 0 ORDER BY price_date DESC LIMIT 2`)
+    .all<{ price_date: string }>();
+  const list = (dates.results ?? []).map((d) => d.price_date);
+  if (list.length < 2) return [];
+  const [newer, older] = list as [string, string];
+
+  const { results } = await db
+    .prepare(
+      `SELECT c.name_bn AS cbn, d.name_bn AS dbn,
+              n.retail_avg AS now, o.retail_avg AS was
+         FROM price_daily n
+         JOIN price_daily o
+           ON o.commodity_id = n.commodity_id
+          AND o.district_id = n.district_id
+          AND o.upazila_id = n.upazila_id
+          AND o.price_date = ?
+         JOIN commodity c ON c.id = n.commodity_id
+         JOIN district d ON d.id = n.district_id
+        WHERE n.price_date = ? AND n.upazila_id = 0 AND n.carried_forward = 0
+          AND n.retail_avg IS NOT NULL AND o.retail_avg IS NOT NULL
+          AND n.retail_avg <> o.retail_avg
+        ORDER BY ABS(n.retail_avg - o.retail_avg) / n.retail_avg DESC
+        LIMIT ?`,
+    )
+    .bind(older, newer, limit)
+    .all();
+
+  return (results ?? []).map((r) => {
+    const row = r as Record<string, unknown>;
+    const now = Number(row.now);
+    const was = Number(row.was);
+    return {
+      commodityBn: String(row.cbn ?? ""),
+      districtBn: String(row.dbn ?? ""),
+      now,
+      was,
+      changePct: was > 0 ? ((now - was) / was) * 100 : null,
+    };
+  });
+}
+
+/** What share of the latest report was carried forward from the day before. */
+export async function carriedShare(db: D1Database): Promise<number | null> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS total, SUM(carried_forward) AS carried FROM price_daily
+        WHERE price_date = (SELECT MAX(price_date) FROM price_daily)`,
+    )
+    .first<{ total: number; carried: number }>();
+  if (!row?.total) return null;
+  return Math.round((row.carried / row.total) * 1000) / 10;
+}
+
+/** Counts for the statistics strip. */
+export async function siteStats(
+  db: D1Database,
+): Promise<{ rows: number; days: number; commodities: number; districts: number }> {
+  const rows = await db.prepare(`SELECT COUNT(*) AS c FROM price_daily`).first<{ c: number }>();
+  const days = await db.prepare(`SELECT COUNT(DISTINCT price_date) AS c FROM price_daily`).first<{ c: number }>();
+  const commodities = await db.prepare(`SELECT COUNT(*) AS c FROM commodity`).first<{ c: number }>();
+  const districts = await db.prepare(`SELECT COUNT(*) AS c FROM district`).first<{ c: number }>();
+  return {
+    rows: rows?.c ?? 0,
+    days: days?.c ?? 0,
+    commodities: commodities?.c ?? 0,
+    districts: districts?.c ?? 0,
+  };
+}
+
+/** The district with the most published rows, used as the home page's ledger. */
+export async function busiestDistrict(db: D1Database): Promise<{ id: number; nameBn: string }> {
+  const row = await db
+    .prepare(
+      `SELECT d.id AS id, d.name_bn AS name FROM price_latest p
+         JOIN district d ON d.id = p.district_id
+        WHERE p.upazila_id = 0
+        GROUP BY d.id ORDER BY COUNT(*) DESC LIMIT 1`,
+    )
+    .first<{ id: number; name: string }>();
+  if (row) return { id: row.id, nameBn: row.name };
+  const fallback = await db.prepare(`SELECT id, name_bn AS name FROM district ORDER BY id LIMIT 1`).first<{
+    id: number;
+    name: string;
+  }>();
+  return { id: fallback?.id ?? 47, nameBn: fallback?.name ?? "ঢাকা" };
 }
 
 /** Health assertion used by the monitoring heartbeat. */

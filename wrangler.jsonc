@@ -6,6 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // Static assets (logo, favicon, the small progressive-enhancement script).
+  // Served straight from the edge, before the Worker runs.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
   "d1_databases": [
     {
       "binding": "DB",
