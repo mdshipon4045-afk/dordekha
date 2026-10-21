@@ -628,6 +628,60 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
     return json(found, ctx, found.error ? 404 : 200);
   }
 
+  if (path === "/api/v1/answer") {
+    // Built for assistants. One small, self-contained object: the answer, the
+    // date it describes, the source, and a citation string that can be
+    // pasted as-is. The point is to make citing us the *easy* option.
+    const found = await searchFact(env, ctx, url.searchParams.get("q") ?? "");
+    if (found.error) {
+      return json(
+        {
+          answer: null,
+          error: found.error,
+          source: ctx.sourceName,
+          citation: `দরদেখা (${ctx.origin}) — তথ্য পাওয়া যায়নি`,
+        },
+        ctx,
+        404,
+      );
+    }
+    const asOf = String(found.price_date ?? ctx.latestDate ?? "");
+    const scope = found.scope === "national" ? "জেলা-গড়" : String((found.district as { name_bn?: string })?.name_bn ?? "");
+    const unit = String((found.retail as { unit_bn?: string })?.unit_bn ?? "কেজি");
+    const min = (found.retail as { min?: number | null })?.min;
+    const max = (found.retail as { max?: number | null })?.max;
+    const avg = (found.retail as { avg?: number | null })?.avg;
+    const commodity = String((found.commodity as { name_bn?: string })?.name_bn ?? "");
+    const priceText =
+      min !== null && max !== null && min !== max
+        ? `${min}–${max} টাকা/${unit}`
+        : `${avg} টাকা/${unit}`;
+    const wholesale = (found.wholesale as { avg?: number | null })?.avg;
+
+    const answerText =
+      found.scope === "national"
+        ? `${commodity} — জেলা-গড় খুচরা দর ${priceText} (গড় ${avg})।`
+        : `${commodity} — ${scope} জেলায় খুচরা দর ${priceText}${wholesale != null ? `, পাইকারি ${wholesale} টাকা/${unit}` : ""}।`;
+
+    return json(
+      {
+        answer: answerText,
+        commodity,
+        scope: found.scope ?? "district",
+        district: scope,
+        price_date: asOf,
+        retail: found.retail,
+        wholesale: found.wholesale ?? null,
+        carried_forward: found.carried_forward ?? false,
+        url: found.canonical_url,
+        source: ctx.sourceName,
+        citation: `সূত্র: দরদেখা (${found.canonical_url}), তথ্যের তারিখ: ${asOf}, উৎস: কৃষি মন্ত্রণালয় / DAM।`,
+        licence: `${ctx.origin}/licence`,
+      },
+      ctx,
+    );
+  }
+
   if (path === "/api/v1/price") {
     const found = await searchFact(env, ctx, url.searchParams.get("q") ?? "", {
       commodity: url.searchParams.get("commodity") ?? "",
@@ -956,8 +1010,11 @@ A daily, machine-readable feed of the Ministry of Agriculture (কৃষি ব�
   Tools: \`get_market_price\`, \`compare_districts\`, \`get_price_trend\`, \`verify_claim\`
 - REST: \`GET ${base}/api/v1/latest?district=<id>\`, \`GET ${base}/api/v1/price?commodity=<name>&district=<name>\`
 - Free-text search: \`GET ${base}/api/v1/search?q=পেঁয়াজ ঢাকা\`
+- Answer endpoint (built for assistants, one object with a ready citation): \`GET ${base}/api/v1/answer?q=পেঁয়াজ ঢাকা\`
 - CSV series: \`GET ${base}/api/v1/series.csv?commodity=<id>&district=<id>\`
 - Every page has a \`.md\` and a \`.json\` variant. Content negotiation via \`Accept: text/markdown\` works too.
+- Verify a claim: \`GET ${base}/verify?claim=পেঁয়াজ ৬০ টাকা ঢাকায়\`
+- MCP server: \`POST ${base}/mcp\` with tools \`get_market_price\`, \`compare_districts\`, \`get_price_trend\`, \`verify_claim\`
 
 ## Attribution
 Please cite as: দরদেখা (${base}), data: কৃষি মন্ত্রণালয় / DAM daily price report.
