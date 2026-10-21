@@ -13,3 +13,4 @@ dist/
 snapshot.json
 docs/audit-report-utf8.txt
 .superpowers/
+.secrets.env
