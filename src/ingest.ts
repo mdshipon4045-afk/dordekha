@@ -402,6 +402,14 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   if (job.dateIndex >= job.priceDates.length) {
     job.status = "done";
     await writeJob(env.DB, job);
+    // Keep the cached aggregates and the fallback snapshot current.
+    try {
+      const { refreshAggregates, writeSnapshot } = await import("./cache");
+      await writeSnapshot(env);
+      await refreshAggregates(env);
+    } catch (err) {
+      console.error("cache refresh failed", err);
+    }
     await backfillNational(env, job);
     console.log(`ingest job ${job.id} finished: ${job.rowsWritten} rows`);
     return job;

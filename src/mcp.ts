@@ -19,7 +19,7 @@
  * assistant that uses our data sends the reader to us.
  */
 
-import { latestForCommodity, latestForDistrict, historyFor, latestDate, commodityCoverage } from "./db";
+import { latestForCommodity, latestForDistrict, historyFor, latestDate, commodityCoverageOrSnapshot } from "./db";
 import { formatBdt } from "./normalize";
 import { matchScore, foldForCompare, bnIncludes, toAsciiDigits } from "./bn";
 import { resolve, findInText, rankByCoverage, type Resolution, type Resolvable } from "./resolve";
@@ -258,8 +258,8 @@ async function resolveWithCoverage<T extends Resolvable>(
   if (!res.match) return res;
   if (res.tied.length <= 1) return res;
 
-  const coverage = await commodityCoverage(
-    env.DB,
+  const coverage = await commodityCoverageOrSnapshot(
+    env,
     res.tied.map((t) => t.id),
   );
   const ranked = rankByCoverage(res.tied, coverage);

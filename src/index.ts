@@ -11,20 +11,27 @@
 
 import { handleMcp, MCP_PROTOCOL_VERSION } from "./mcp";
 import {
-  busiestDistrict,
-  carriedShare,
-  commodityCoverage,
-  historyRange,
-  historyFor,
+  commodityCoverageOrSnapshot,
+  commodityRefs,
+  districtRefs,
+  historyForOrSnapshot,
   ingestHealth,
-  latestDate,
-  latestForCommodity,
-  latestForDistrict,
+  latestForCommodityOrSnapshot,
+  latestForDistrictOrSnapshot,
   ledgerRows,
   movers,
-  priceForDate,
-  siteStats,
+  priceForDateOrSnapshot,
+  unitNames,
 } from "./db";
+import {
+  getAggregates,
+  refreshAggregates,
+  setAggregates,
+  setHistorySnapshot,
+  setMasterSnapshot,
+  setSnapshot,
+  writeSnapshot,
+} from "./cache";
 import { formatBdt } from "./normalize";
 import { extractKeywords, foldForCompare } from "./bn";
 import { candidatesFor, pickByCoverage } from "./resolve";
@@ -149,10 +156,11 @@ export default {
 
     try {
       // Inside the try: a failed lookup must produce a readable error, not an
-      // empty 500 from the platform.
-      const latest = await latestDate(env.DB);
-      const ctxR = ctxFor(env, latest);
-      // ── MCP ────────────────────────────────────────────────────────────
+      // empty 500 from the platform. The aggregates are cached in KV, so the
+      // common case does not touch the database at all.
+      const aggregates = await getAggregates(env);
+      const latest = aggregates.latestDate;
+      const ctxR = ctxFor(env, latest);      // ── MCP ────────────────────────────────────────────────────────────
       if (path === "/mcp") {
         if (request.method !== "POST") {
           return json(
@@ -182,13 +190,13 @@ export default {
 
       // ── Operational ─────────────────────────────────────────────────────
       if (path === "/health") {
-        // Public: only what a monitor needs. The internal pipeline state is
-        // not public information.
-        const h = await ingestHealth(env.DB);
+        // Public: only what a monitor needs, and it must not depend on the
+        // database being readable — the aggregates are cached.
+        const agg = await getAggregates(env);
         const fresh =
-          h.latestDate !== null && Date.now() - new Date(h.latestDate).getTime() < 5 * 86_400_000;
+          agg.latestDate !== null && Date.now() - new Date(agg.latestDate).getTime() < 5 * 86_400_000;
         return json(
-          { ok: fresh && (h.rowsToday ?? 0) > 0, latest_date: h.latestDate, rows: h.rowsToday },
+          { ok: fresh && agg.rowCount > 0, latest_date: agg.latestDate, rows: agg.rowCount },
           ctxR,
           fresh ? 200 : 503,
         );
@@ -214,6 +222,43 @@ export default {
         }
         if (path === "/internal/health") {
           return json(await ingestHealth(env.DB), ctxR);
+        }
+        if (path === "/internal/snapshot") {
+          // Write the current prices and the daily aggregates to KV, so the
+          // site keeps serving when the database's read budget runs out.
+          const n = await writeSnapshot(env);
+          await refreshAggregates(env);
+          return json({ snapshot_rows: n, refreshed: true }, ctxR);
+        }
+        if (path === "/internal/snapshot-upload") {
+          // A snapshot built from a database export, used when the database
+          // itself cannot be read.
+          const payload = (await request.json()) as {
+            snapshot?: { at: string; date: string | null; rows: unknown[] };
+            aggregates?: Record<string, unknown>;
+            master?: unknown;
+            history?: { rows: unknown[] };
+          };
+          if (payload.snapshot?.rows) {
+            await setSnapshot(env, payload.snapshot as never);
+          }
+          if (payload.aggregates) {
+            await setAggregates(env, payload.aggregates as never);
+          }
+          if (payload.master) {
+            await setMasterSnapshot(env, payload.master as never);
+          }
+          if (payload.history?.rows) {
+            await setHistorySnapshot(env, payload.history.rows as never);
+          }
+          return json(
+            {
+              ok: true,
+              rows: payload.snapshot?.rows?.length ?? 0,
+              history: payload.history?.rows?.length ?? 0,
+            },
+            ctxR,
+          );
         }
         if (path === "/internal/telegram/check") {          const { checkTelegram, telegramConfig } = await import("./telegram");
           const config = telegramConfig(env);
@@ -259,7 +304,7 @@ export default {
       if (path.startsWith("/api/")) return apiRoutes(env, ctxR, url);
 
       // ── Pages ──────────────────────────────────────────────────────────
-      if (path === "/") return homePage(env, ctxR, fmt);
+      if (path === "/") return homePage(env, ctxR, fmt, aggregates);
       if (path === "/price") return priceIndex(env, ctxR, fmt);
       if (path === "/dataset") return datasetPage(env, ctxR);
       if (path === "/methodology") return methodologyPage(env, ctxR);
@@ -308,15 +353,27 @@ export default {
 
 // ── Page handlers ───────────────────────────────────────────────────────────
 
-async function homePage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+async function homePage(
+  env: Env,
+  ctx: RenderContext,
+  fmt: Format,
+  aggregates: { busiestDistrictId: number; busiestDistrictName: string; commodityCount: number; districtCount: number; rowCount: number; days: number; carriedPct: number | null },
+): Promise<Response> {
   const [district, stats, carried, moveRows] = await Promise.all([
-    busiestDistrict(env.DB),
-    siteStats(env.DB),
-    carriedShare(env.DB),
-    movers(env.DB, 6),
+    Promise.resolve({ id: aggregates.busiestDistrictId, nameBn: aggregates.busiestDistrictName }),
+    Promise.resolve({
+      commodities: aggregates.commodityCount,
+      districts: aggregates.districtCount,
+      rows: aggregates.rowCount,
+      days: aggregates.days,
+    }),
+    Promise.resolve(aggregates.carriedPct),
+    movers(env.DB, 6).catch(() => []),
   ]);
 
-  const rows = await ledgerRows(env.DB, district.id, 16);
+  // The ledger sheet is a nicety; if the database cannot be read right now,
+  // the page still renders with the rest of it.
+  const rows = await ledgerRows(env.DB, district.id, 16).catch(() => []);
   const ledger = rows.map((r) => ({
     commodityBn: r.commodityBn,
     commodityEn: r.commodityEn,
@@ -357,31 +414,18 @@ async function homePage(env: Env, ctx: RenderContext, fmt: Format): Promise<Resp
 }
 
 async function priceIndex(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
-  const { results: cs } = await env.DB
-    .prepare(
-      `SELECT c.id, c.name_bn, c.name_en, c.group_id, g.name_bn AS group_bn,
-              p.retail_avg, p.retail_unit
-         FROM commodity c
-         LEFT JOIN commodity_group g ON g.id = c.group_id
-         LEFT JOIN price_latest p ON p.commodity_id = c.id AND p.district_id = 47 AND p.upazila_id = 0
-        ORDER BY g.name_bn, c.name_bn`,
-    )
-    .all();
+  const refs = await commodityRefs(env);
+  const dhaka = await latestForDistrictOrSnapshot(env, 47, 1000);
+  const byCommodity = new Map(dhaka.map((r) => [r.commodityId, r.retail?.avg ?? null]));
 
-  const items: PriceIndexItem[] = (cs ?? []).map((c) => {
-    const r = c as Record<string, unknown>;
-    const id = Number(r.id);
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return {
-      bn,
-      en,
-      group: String(r.group_bn ?? ""),
-      slug: commoditySlug(bn, en, id),
-      retailAvg: r.retail_avg === null || r.retail_avg === undefined ? null : Number(r.retail_avg),
-      unitBn: "কেজি",
-    };
-  });
+  const items: PriceIndexItem[] = refs.map((c) => ({
+    bn: c.nameBn,
+    en: c.nameEn,
+    group: c.groupBn,
+    slug: commoditySlug(c.nameBn, c.nameEn, c.id),
+    retailAvg: byCommodity.get(c.id) ?? null,
+    unitBn: "কেজি",
+  }));
 
   if (fmt === "json") return json({ count: items.length, commodities: items, source: SOURCE }, ctx);
   if (fmt === "markdown") {
@@ -400,32 +444,28 @@ async function pricePage(
   districtSlugParam: string | null,
   date: string | null,
 ): Promise<Response> {
-  const { results: cs } = await env.DB.prepare(`SELECT id, name_bn, name_en, group_id FROM commodity`).all();
-  const commodities = (cs ?? []).map((c) => {
-    const r = c as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return { id: Number(r.id), bn, en, slug: commoditySlug(bn, en, Number(r.id)) };
-  });
+  const commodities = (await commodityRefs(env)).map((c) => ({
+    id: c.id,
+    bn: c.nameBn,
+    en: c.nameEn,
+    groupId: c.groupId,
+    groupBn: c.groupBn,
+    slug: commoditySlug(c.nameBn, c.nameEn, c.id),
+  }));
   const commodity = commodities.find((c) => c.slug === commoditySlugParam);
   if (!commodity) return notFound(env, ctx);
 
-  const { results: gs } = await env.DB.prepare(`SELECT id, name_bn FROM commodity_group`).all();
-  const groups = new Map<number, string>();
-  for (const g of gs ?? []) {
-    groups.set(Number((g as Record<string, unknown>).id), String((g as Record<string, unknown>).name_bn ?? ""));
-  }
 
-  const { results: ds } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM district`).all();
-  const districts = (ds ?? []).map((d) => {
-    const r = d as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return { id: Number(r.id), bn, en, slug: districtSlug(bn, en, Number(r.id)) };
-  });
+
+  const districts = (await districtRefs(env)).map((d) => ({
+    id: d.id,
+    bn: d.nameBn,
+    en: d.nameEn,
+    slug: districtSlug(d.nameBn, d.nameEn, d.id),
+  }));
 
   if (!districtSlugParam) {
-    const rows = await latestForCommodity(env.DB, commodity.id, 200);
+    const rows = await latestForCommodityOrSnapshot(env, commodity.id, 200);
     const enriched = rows.map((r) => {
       const d = districts.find((x) => x.id === r.districtId);
       return {
@@ -437,7 +477,7 @@ async function pricePage(
     });
 
     const since = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10);
-    const hist = await historyFor(env.DB, commodity.id, 47, since, 60);
+    const hist = await historyForOrSnapshot(env, commodity.id, 47, since, 60);
 
     const data: CommodityPageData = {
       commodity: {
@@ -445,12 +485,7 @@ async function pricePage(
         bn: commodity.bn,
         en: commodity.en,
         slug: commodity.slug,
-        groupBn:
-          groups.get(
-            Number(
-              (cs ?? []).find((c) => Number((c as Record<string, unknown>).id) === commodity.id)?.["group_id"] ?? 0,
-            ),
-          ) ?? "",
+        groupBn: commodity.groupBn,
       },
       date: ctx.latestDate,
       districtRows: enriched,
@@ -490,14 +525,14 @@ async function pricePage(
   // the latest snapshot: a page for 1 August must not carry 17 October's
   // figures under an August date.
   const row = date
-    ? await priceForDate(env.DB, commodity.id, district.id, date)
-    : (await latestForDistrict(env.DB, district.id, 1000)).find((r) => r.commodityId === commodity.id);
+    ? await priceForDateOrSnapshot(env, commodity.id, district.id, date)
+    : (await latestForDistrictOrSnapshot(env, district.id, 1000)).find((r) => r.commodityId === commodity.id);
 
   if (!row) {
     if (date) {
       // Point the reader (or the assistant) at the dates that do exist.
       const since = new Date(Date.now() - 400 * 86_400_000).toISOString().slice(0, 10);
-      const hist = await historyFor(env.DB, commodity.id, district.id, since, 400);
+      const hist = await historyForOrSnapshot(env, commodity.id, district.id, since, 400);
       const available = hist
         .map((h) => ({
           date: h.priceDate,
@@ -517,11 +552,7 @@ async function pricePage(
     return notFound(env, ctx);
   }
 
-  const { results: us } = await env.DB.prepare(`SELECT id, name_bn FROM unit`).all();
-  const unitMap = new Map<number, string>();
-  for (const u of us ?? []) {
-    unitMap.set(Number((u as Record<string, unknown>).id), String((u as Record<string, unknown>).name_bn ?? "কেজি"));
-  }
+  const unitMap = await unitNames(env);
 
   const fact: PriceFact = {
     commodityBn: commodity.bn,
@@ -558,24 +589,19 @@ async function pricePage(
 }
 
 async function districtPage(env: Env, ctx: RenderContext, request: Request, slug: string): Promise<Response> {
-  const { results: ds } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM district`).all();
-  const districts = (ds ?? []).map((d) => {
-    const r = d as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return { id: Number(r.id), bn, en, slug: districtSlug(bn, en, Number(r.id)) };
-  });
+  const districts = (await districtRefs(env)).map((d) => ({
+    id: d.id,
+    bn: d.nameBn,
+    en: d.nameEn,
+    slug: districtSlug(d.nameBn, d.nameEn, d.id),
+  }));
   const district = districts.find((d) => d.slug === slug);
   if (!district) return notFound(env, ctx);
 
-  const rows = await latestForDistrict(env.DB, district.id, 1000);
-  const { results: cs } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM commodity`).all();
+  const rows = await latestForDistrictOrSnapshot(env, district.id, 1000);
   const commodityById = new Map<number, { bn: string; slug: string }>();
-  for (const c of cs ?? []) {
-    const r = c as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    commodityById.set(Number(r.id), { bn, slug: commoditySlug(bn, en, Number(r.id)) });
+  for (const c of await commodityRefs(env)) {
+    commodityById.set(c.id, { bn: c.nameBn, slug: commoditySlug(c.nameBn, c.nameEn, c.id) });
   }
 
   const items: PriceIndexItem[] = rows
@@ -658,7 +684,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
 
   if (path === "/api/v1/latest") {
     const districtId = Number(url.searchParams.get("district") ?? 47);
-    const rows = await latestForDistrict(env.DB, districtId, 1000);
+    const rows = await latestForDistrictOrSnapshot(env, districtId, 1000);
     return json(
       {
         district_id: districtId,
@@ -751,7 +777,7 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
     if (!commodity || !district) return json({ error: "commodity and district ids are required" }, ctx, 400);
     const since =
       url.searchParams.get("since") ?? new Date(Date.now() - 120 * 86_400_000).toISOString().slice(0, 10);
-    const rows = await historyFor(env.DB, commodity, district, since, 400);
+    const rows = await historyForOrSnapshot(env, commodity, district, since, 400);
     const lines = [
       "price_date,commodity_id,district_id,retail_min,retail_max,retail_avg,wholesale_min,wholesale_max,wholesale_avg,carried_forward,anomaly",
     ];
@@ -781,19 +807,13 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
   }
 
   if (path === "/api/v1/districts") {
-    const { results } = await env.DB
-      .prepare(`SELECT id, name_bn, name_en, division_id FROM district WHERE id > 0 ORDER BY name_bn`)
-      .all();
-    return json({ count: (results ?? []).length, districts: results, source: SOURCE }, ctx);
+    const list = await districtRefs(env);
+    return json({ count: list.length, districts: list, source: SOURCE }, ctx);
   }
 
   if (path === "/api/v1/commodities") {
-    const { results } = await env.DB
-      .prepare(
-        `SELECT c.id, c.name_bn, c.name_en, c.group_id, g.name_bn AS group_bn FROM commodity c LEFT JOIN commodity_group g ON g.id=c.group_id ORDER BY g.name_bn, c.name_bn`,
-      )
-      .all();
-    return json({ count: (results ?? []).length, commodities: results, source: SOURCE }, ctx);
+    const list = await commodityRefs(env);
+    return json({ count: list.length, commodities: list, source: SOURCE }, ctx);
   }
 
   return json({ error: "Not Found", hint: "see /api" }, ctx, 404);
@@ -812,17 +832,8 @@ async function searchFact(
   q: string,
   explicit?: { commodity: string; district: string },
 ): Promise<Record<string, unknown>> {
-  const { results: cs } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM commodity`).all();
-  const { results: ds } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM district`).all();
-
-  const commodityList = (cs ?? []).map((r) => {
-    const row = r as Record<string, unknown>;
-    return { id: Number(row.id), nameBn: String(row.name_bn ?? ""), nameEn: String(row.name_en ?? "") };
-  });
-  const districtList = (ds ?? []).map((r) => {
-    const row = r as Record<string, unknown>;
-    return { id: Number(row.id), nameBn: String(row.name_bn ?? ""), nameEn: String(row.name_en ?? "") };
-  });
+  const commodityList = await commodityRefs(env);
+  const districtList = await districtRefs(env);
 
   // ── Work out what the user is asking about ──────────────────────────────
   const keywords = extractKeywords(q);
@@ -848,13 +859,13 @@ async function searchFact(
   //     right answer ("চাল" matches 27 varieties, most with no Dhaka row);
   //  2. among the ones that are reported, the one reported in the most
   //     districts wins, so "চাল" means rice rather than "চালকুমড়া".
-  const districtRows = district ? await latestForDistrict(env.DB, district.id, 1000) : [];
+  const districtRows = district ? await latestForDistrictOrSnapshot(env, district.id, 1000) : [];
   const present = new Set(districtRows.map((r) => r.commodityId));
   const viable = district
     ? commodityCandidates.filter((c) => present.has(c.id))
     : commodityCandidates;
-  const globalCoverage = await commodityCoverage(
-    env.DB,
+  const globalCoverage = await commodityCoverageOrSnapshot(
+    env,
     commodityCandidates.map((c) => c.id),
   );
   const ranked = [...viable].sort((a, b) => {
@@ -905,7 +916,7 @@ async function searchFact(
   }
 
   // ── No district in the query: answer with the national picture ─────────
-  const all = await latestForCommodity(env.DB, commodity.id, 200);
+  const all = await latestForCommodityOrSnapshot(env, commodity.id, 200);
   const withRetail = all
     .map((r) => ({ r, avg: r.retail?.avg }))
     .filter((x): x is { r: (typeof all)[number]; avg: number } => typeof x.avg === "number");
@@ -924,14 +935,7 @@ async function searchFact(
   const cheapest = withRetail.find((x) => x.avg === avgs[0])!;
   const dearest = withRetail.find((x) => x.avg === avgs[avgs.length - 1])!;
   const unit = withRetail[0]?.r.retail?.unit ?? null;
-  const { results: unitRows } = await env.DB.prepare(`SELECT id, name_bn FROM unit`).all();
-  const unitMap = new Map<number, string>();
-  for (const u of unitRows ?? []) {
-    unitMap.set(
-      Number((u as Record<string, unknown>).id),
-      String((u as Record<string, unknown>).name_bn ?? "কেজি"),
-    );
-  }
+  const unitMap = await unitNames(env);
 
   return {
     commodity: { name_bn: commodity.nameBn, name_en: commodity.nameEn },
@@ -1047,9 +1051,9 @@ async function llmsTxt(env: Env): Promise<Response> {
   // The claim about how much history we hold is computed, not asserted. A
   // stale "16 months" in this file would be a lie the moment the database
   // fell behind.
-  const range = await historyRange(env.DB);
-  const coverage = range.days
-    ? `${range.first} থেকে ${range.last} (${range.days}টি প্রতিবেদনের তারিখ)`
+  const agg = await getAggregates(env);
+  const coverage = agg.days
+    ? `${agg.firstDate} থেকে ${agg.latestDate} (${agg.days}টি প্রতিবেদনের তারিখ)`
     : "এখনো কোনো তারিখ নেই";
 
   const body = `# দরদেখা (Dordekha)
@@ -1118,19 +1122,11 @@ async function sitemap(env: Env, latest: string | null): Promise<Response> {
     `${base}/verify`,
   ];
 
-  const { results: cs } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM commodity`).all();
-  for (const c of cs ?? []) {
-    const r = c as Record<string, unknown>;
-    urls.push(
-      `${base}/price/${commoditySlug(String(r.name_bn ?? ""), String(r.name_en ?? ""), Number(r.id))}`,
-    );
+  for (const c of await commodityRefs(env)) {
+    urls.push(`${base}/price/${commoditySlug(c.nameBn, c.nameEn, c.id)}`);
   }
-  const { results: ds } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM district`).all();
-  for (const d of ds ?? []) {
-    const r = d as Record<string, unknown>;
-    urls.push(
-      `${base}/district/${districtSlug(String(r.name_bn ?? ""), String(r.name_en ?? ""), Number(r.id))}`,
-    );
+  for (const d of await districtRefs(env)) {
+    urls.push(`${base}/district/${districtSlug(d.nameBn, d.nameEn, d.id)}`);
   }
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -1145,9 +1141,27 @@ ${urls.map((u) => `  <url><loc>${esc(u)}</loc>${latest ? `<lastmod>${latest}</la
 // ── Content documents ───────────────────────────────────────────────────────
 
 async function datasetPage(env: Env, ctx: RenderContext): Promise<Response> {
-  const stats = await siteStats(env.DB);
-  const upazilas = await env.DB.prepare(`SELECT COUNT(*) AS c FROM upazila`).first<{ c: number }>();
-  return html(renderDatasetHtml({ ...stats, upazilas: upazilas?.c ?? 0 }, ctx), ctx);
+  const agg = await getAggregates(env);
+  let upazilas = 0;
+  try {
+    const u = await env.DB.prepare(`SELECT COUNT(*) AS c FROM upazila`).first<{ c: number }>();
+    upazilas = u?.c ?? 0;
+  } catch {
+    /* the count is a nicety, not worth failing the page over */
+  }
+  return html(
+    renderDatasetHtml(
+      {
+        commodities: agg.commodityCount,
+        districts: agg.districtCount,
+        upazilas,
+        days: agg.days,
+        rows: agg.rowCount,
+      },
+      ctx,
+    ),
+    ctx,
+  );
 }
 
 async function methodologyPage(env: Env, ctx: RenderContext): Promise<Response> {

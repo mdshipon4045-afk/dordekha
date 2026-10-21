@@ -6,6 +6,234 @@
 
 import type { MasterData, PriceRecord } from "./types";
 import { commoditySlug, districtSlug } from "./slug";
+import { getHistorySnapshot, getMasterSnapshot, getSnapshot, type SnapshotRow } from "./cache";
+import type { Env } from "./types";
+
+/**
+ * Map a snapshot row back to the shape the read paths expect.
+ *
+ * The snapshot in KV is the fallback for when the database cannot be read —
+ * the free tier's daily read budget runs out, and a price service that
+ * answers "500" looks like the data has vanished.
+ */
+function snapshotToRow(r: SnapshotRow): PriceRowOut {
+  return {
+    priceDate: r.t,
+    districtId: r.d,
+    upazilaId: 0,
+    commodityId: r.c,
+    groupId: r.g,
+    subGroupId: 0,
+    retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
+    wholesale:
+      r.wavg === null
+        ? null
+        : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
+    carriedForward: r.cf === 1,
+    anomaly: r.an,
+  };
+}
+
+/** Latest prices for one district, falling back to the cached snapshot. */
+export async function latestForDistrictOrSnapshot(
+  env: Env,
+  districtId: number,
+  limit = 1000,
+): Promise<PriceRowOut[]> {
+  try {
+    return await latestForDistrict(env.DB, districtId, limit);
+  } catch (err) {
+    const snap = await getSnapshot(env);
+    if (!snap) throw err;
+    return snap.rows.filter((r) => r.d === districtId).map(snapshotToRow).slice(0, limit);
+  }
+}
+
+/** Latest prices for one commodity across districts, with the same fallback. */
+export async function latestForCommodityOrSnapshot(
+  env: Env,
+  commodityId: number,
+  limit = 200,
+): Promise<PriceRowOut[]> {
+  try {
+    return await latestForCommodity(env.DB, commodityId, limit);
+  } catch (err) {
+    const snap = await getSnapshot(env);
+    if (!snap) throw err;
+    return snap.rows.filter((r) => r.c === commodityId).map(snapshotToRow).slice(0, limit);
+  }
+}
+
+/* ── Reference data, with a cached fallback ─────────────────────────────── */
+
+export interface CommodityRef {
+  id: number;
+  nameBn: string;
+  nameEn: string;
+  groupId: number;
+  groupBn: string;
+  unitRetail: number | null;
+  unitWholesale: number | null;
+}
+
+export interface DistrictRef {
+  id: number;
+  nameBn: string;
+  nameEn: string;
+}
+
+/**
+ * How much published data each commodity has.
+ *
+ * Used to break ties when a name is ambiguous. Falls back to the cached
+ * snapshot so that a broad query ("rice", which matches dozens of
+ * varieties) does not need the database at all.
+ */
+export async function commodityCoverageOrSnapshot(
+  env: Env,
+  ids: number[],
+): Promise<Map<number, number>> {
+  try {
+    return await commodityCoverage(env.DB, ids);
+  } catch (err) {
+    const snap = await getSnapshot(env);
+    if (!snap) throw err;
+    const map = new Map<number, number>();
+    for (const r of snap.rows) map.set(r.c, (map.get(r.c) ?? 0) + 1);
+    return map;
+  }
+}
+
+/** The commodity list, from the database or the cache. */
+export async function commodityRefs(env: Env): Promise<CommodityRef[]> {
+  try {
+    const { results } = await env.DB
+      .prepare(
+        `SELECT c.id, c.name_bn, c.name_en, c.group_id, g.name_bn AS group_bn,
+                c.unit_retail, c.unit_whole_sale
+           FROM commodity c LEFT JOIN commodity_group g ON g.id = c.group_id
+          ORDER BY c.id`,
+      )
+      .all();
+    return (results ?? []).map((r) => {
+      const row = r as Record<string, unknown>;
+      return {
+        id: Number(row.id),
+        nameBn: String(row.name_bn ?? ""),
+        nameEn: String(row.name_en ?? ""),
+        groupId: Number(row.group_id ?? 0),
+        groupBn: String(row.group_bn ?? ""),
+        unitRetail: row.unit_retail === null ? null : Number(row.unit_retail),
+        unitWholesale: row.unit_whole_sale === null ? null : Number(row.unit_whole_sale),
+      };
+    });
+  } catch (err) {
+    const master = await getMasterSnapshot(env);
+    if (!master) throw err;
+    return master.commodities;
+  }
+}
+
+/** The district list, from the database or the cache. */
+export async function districtRefs(env: Env): Promise<DistrictRef[]> {
+  try {
+    const { results } = await env.DB
+      .prepare(`SELECT id, name_bn, name_en FROM district WHERE id > 0 ORDER BY id`)
+      .all();
+    return (results ?? []).map((r) => {
+      const row = r as Record<string, unknown>;
+      return { id: Number(row.id), nameBn: String(row.name_bn ?? ""), nameEn: String(row.name_en ?? "") };
+    });
+  } catch (err) {
+    const master = await getMasterSnapshot(env);
+    if (!master) throw err;
+    return master.districts;
+  }
+}
+
+/** The unit list, from the database or the cache. */
+export async function unitNames(env: Env): Promise<Map<number, string>> {
+  try {
+    const { results } = await env.DB.prepare(`SELECT id, name_bn FROM unit`).all();
+    const map = new Map<number, string>();
+    for (const u of results ?? []) {
+      const row = u as Record<string, unknown>;
+      map.set(Number(row.id), String(row.name_bn ?? "কেজি"));
+    }
+    return map;
+  } catch (err) {
+    const master = await getMasterSnapshot(env);
+    if (!master) throw err;
+    return new Map(master.units.map((u) => [u.id, u.nameBn]));
+  }
+}
+
+/** Price history, from the database or the cached copy. */
+export async function historyForOrSnapshot(
+  env: Env,
+  commodityId: number,
+  districtId: number,
+  sinceDate: string,
+  limit = 400,
+): Promise<PriceRowOut[]> {
+  try {
+    return await historyFor(env.DB, commodityId, districtId, sinceDate, limit);
+  } catch (err) {
+    const hist = await getHistorySnapshot(env);
+    if (!hist) throw err;
+    return hist.rows
+      .filter((r) => r.c === commodityId && r.d === districtId && r.t >= sinceDate)
+      .sort((a, b) => (a.t < b.t ? 1 : -1))
+      .slice(0, limit)
+      .map((r) => ({
+        priceDate: r.t,
+        districtId: r.d,
+        upazilaId: 0,
+        commodityId: r.c,
+        groupId: 0,
+        subGroupId: 0,
+        retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
+        wholesale:
+          r.wavg === null
+            ? null
+            : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
+        carriedForward: r.cf === 1,
+        anomaly: null,
+      }));
+  }
+}
+
+/** One price on one date, from the database or the cached history. */
+export async function priceForDateOrSnapshot(
+  env: Env,
+  commodityId: number,
+  districtId: number,
+  date: string,
+): Promise<PriceRowOut | null> {
+  try {
+    return await priceForDate(env.DB, commodityId, districtId, date);
+  } catch (err) {
+    const hist = await getHistorySnapshot(env);
+    if (!hist) throw err;
+    const r = hist.rows.find((x) => x.c === commodityId && x.d === districtId && x.t === date);
+    if (!r) return null;
+    return {
+      priceDate: r.t,
+      districtId: r.d,
+      upazilaId: 0,
+      commodityId: r.c,
+      groupId: 0,
+      subGroupId: 0,
+      retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
+      wholesale:
+        r.wavg === null
+          ? null
+          : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
+      carriedForward: r.cf === 1,
+      anomaly: null,
+    };
+  }
+}
 
 export interface DbEnv {
   DB: D1Database;
