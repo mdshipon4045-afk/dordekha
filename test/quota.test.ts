@@ -137,6 +137,48 @@ describe("the per-minute tick does not spend the read budget", () => {
     expect(reads.length).toBeLessThanOrEqual(1);
   });
 
+  it("keeps working when the database refuses the read", async () => {
+    // The quota is spent, so the history check cannot be answered. The tick
+    // must not fall over: the daily refresh still has work to do.
+    const d1 = d1WithJob(null);
+    const original = d1.db.prepare.bind(d1.db);
+    d1.db.prepare = ((sql: string) => {
+      if (sql.includes("price_daily")) {
+        return {
+          sql,
+          bind: () => ({
+            first: async () => {
+              throw new Error("D1 read limit exceeded");
+            },
+            all: async () => {
+              throw new Error("D1 read limit exceeded");
+            },
+            run: async () => {
+              throw new Error("D1 read limit exceeded");
+            },
+          }),
+          first: async () => {
+            throw new Error("D1 read limit exceeded");
+          },
+          all: async () => {
+            throw new Error("D1 read limit exceeded");
+          },
+          run: async () => {
+            throw new Error("D1 read limit exceeded");
+          },
+        } as unknown as D1PreparedStatement;
+      }
+      return original(sql);
+    }) as typeof d1.db.prepare;
+
+    const kv = fakeKV({ [AGGREGATE_KEY]: aggregates(3) });
+    const env = envWith(d1, kv);
+
+    // It must not throw.
+    const result = await cronTick(env);
+    expect(result.action).toBeTruthy();
+  });
+
   it("verifies a thin history against the database, but only once a day", async () => {
     // The cache says the history is thinner than it should be; the database
     // says it is fine. The tick must pay for that answer once, not once a

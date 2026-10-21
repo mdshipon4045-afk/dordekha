@@ -207,7 +207,17 @@ async function historyRangeCheap(env: Env): Promise<{ first: string | null; last
   const day = today();
   if (await env.CACHE.get(RANGE_CHECK_KEY(day))) return null;
 
-  const range = await historyRange(env.DB);
+  let range: { first: string | null; last: string | null; days: number };
+  try {
+    range = await historyRange(env.DB);
+  } catch {
+    // The read budget is spent. The answer is unknown, so no backfill is
+    // started on a guess — but the daily refresh still has work to do, and
+    // the tick must not fall over. The marker is short-lived, so the
+    // question is asked again in an hour rather than every minute.
+    await env.CACHE.put(RANGE_CHECK_KEY(day), "failed", { expirationTtl: 60 * 60 });
+    return null;
+  }
   await env.CACHE.put(RANGE_CHECK_KEY(day), "1", { expirationTtl: 60 * 60 * 48 });
   return range;
 }
