@@ -29,7 +29,7 @@ import { fetchMasterData, fetchDailyPrices, fetchNationalScroll } from "./moa";
 import { normalizeBatch, type RawUpstreamRow } from "./normalize";
 import {
   historyRange,
-  previousValues,
+  previousValuesForDistricts,
   readJob,
   recordIngestRun,
   refreshLatestFor,
@@ -37,6 +37,7 @@ import {
   upsertPrices,
   writeJob,
 } from "./db";
+import { getAggregates } from "./cache";
 import type { Env, MasterData, PriceRecord } from "./types";
 
 /**
@@ -172,6 +173,46 @@ export async function backfillPaused(env: Env): Promise<boolean> {
 }
 
 /**
+ * The marker that says the history depth was already verified today.
+ *
+ * The verification costs a scan of the price table, so it is worth doing
+ * once a day and not once a minute.
+ */
+const RANGE_CHECK_KEY = (day: string) => `ingest:range-checked:${day}`;
+
+/**
+ * Should a backfill start? The answer is `null` when the question does not
+ * need asking.
+ *
+ * The cached aggregates already hold how far back the history reaches, and
+ * reading them is free. So the price table is only scanned when the cache
+ * says the history is thin — that is, only when the answer could change
+ * what the tick does — and at most once a day after that.
+ *
+ * Before this, the tick read the whole price table every minute, whether or
+ * not it had any work to do. At 11,594 rows and 1,440 ticks a day that is
+ * 16.7 million rows against a 5 million budget, and the quota was gone by
+ * the middle of the afternoon.
+ *
+ * Nothing is written to the cache on the common path: KV's free tier allows
+ * a thousand writes a day, and a write per tick would spend it.
+ */
+async function historyRangeCheap(env: Env): Promise<{ first: string | null; last: string | null; days: number } | null> {
+  const cached = await getAggregates(env);
+  if (cached.days >= HISTORY_DAYS * 0.8) return null;
+
+  // The cache says the history is thin. Now the truth is worth paying for —
+  // but only once a day, because a tick that cannot act must not keep
+  // asking the same question.
+  const day = today();
+  if (await env.CACHE.get(RANGE_CHECK_KEY(day))) return null;
+
+  const range = await historyRange(env.DB);
+  await env.CACHE.put(RANGE_CHECK_KEY(day), "1", { expirationTtl: 60 * 60 * 48 });
+  return range;
+}
+
+/**
  * The per-minute heartbeat. This is the only thing that drives the job in
  * production, and it is also what starts a new job when one is due.
  */
@@ -188,8 +229,8 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
 
   // The history claim on the site has to be true, so when it is thinner than
   // it should be, a backfill runs before the daily refresh.
-  const range = await historyRange(env.DB);
-  if (range.days < HISTORY_DAYS * 0.8 && !(await backfillPaused(env))) {
+  const range = await historyRangeCheap(env);
+  if (range && range.days < HISTORY_DAYS * 0.8 && !(await backfillPaused(env))) {
     console.log(`history is ${range.days} days — starting a backfill`);
     return { action: "backfill", job: await startBackfill(env) };
   }
@@ -341,6 +382,12 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   let ok = 0;
   let missing = 0;
 
+  // One statement for the whole batch, not one per district.
+  const districtsWithRows = results
+    .filter((r) => r.error === null && r.rows.length > 0)
+    .map((r) => r.districtId);
+  const previousByDistrict = await previousValuesForDistricts(env.DB, districtsWithRows, current);
+
   for (const res of results) {
     if (res.error) {
       missing++;
@@ -352,7 +399,7 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
       continue;
     }
     ok++;
-    const prevMap = await previousValues(env.DB, res.districtId, current);
+    const prevMap = previousByDistrict.get(res.districtId) ?? new Map();
     records.push(
       ...normalizeBatch(res.rows, { priceDate: current, districtId: res.districtId, upazilaId: null }, prevMap),
     );

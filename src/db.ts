@@ -691,30 +691,57 @@ export async function historyFor(
   return (results ?? []).map((r) => mapRow(r as Record<string, unknown>));
 }
 
-/** Previous reported values for a district, used for carry-forward detection. */
-export async function previousValues(
+/**
+ * The previous reported values for a whole batch of districts, in one query.
+ *
+ * The per-district version this replaced cost a full scan of the price
+ * table for every district in the batch: four districts meant four scans on
+ * every tick, and the tick runs 1,440 times a day. One statement for the
+ * batch costs a quarter of that, and once the index in migration 0004 is
+ * applied it costs a fraction of a scan.
+ *
+ * The previous date is still resolved per district — a district that missed
+ * a report day must not borrow another district's figures.
+ */
+export async function previousValuesForDistricts(
   db: D1Database,
-  districtId: number,
+  districtIds: number[],
   beforeDate: string,
-): Promise<Map<number, { retailAvg: number | null; wholesaleAvg: number | null }>> {
+): Promise<Map<number, Map<number, { retailAvg: number | null; wholesaleAvg: number | null }>>> {
+  const byDistrict = new Map<number, Map<number, { retailAvg: number | null; wholesaleAvg: number | null }>>();
+  if (districtIds.length === 0) return byDistrict;
+
+  const placeholders = districtIds.map(() => "?").join(",");
   const { results } = await db
     .prepare(
-      `SELECT commodity_id, retail_avg, wholesale_avg FROM price_daily
-        WHERE district_id = ? AND upazila_id = 0 AND price_date = (
-          SELECT MAX(price_date) FROM price_daily
-            WHERE district_id = ? AND upazila_id = 0 AND price_date < ?
-        )`,
+      `SELECT p.district_id AS district_id, p.commodity_id AS commodity_id,
+              p.retail_avg AS retail_avg, p.wholesale_avg AS wholesale_avg
+         FROM price_daily p
+        WHERE p.upazila_id = 0
+          AND p.district_id IN (${placeholders})
+          AND p.price_date = (SELECT MAX(q.price_date) FROM price_daily q
+                               WHERE q.district_id = p.district_id
+                                 AND q.upazila_id = 0
+                                 AND q.price_date < ?)`,
     )
-    .bind(districtId, districtId, beforeDate)
+    .bind(...districtIds, beforeDate)
     .all();
-  const map = new Map<number, { retailAvg: number | null; wholesaleAvg: number | null }>();
+
   for (const r of results ?? []) {
-    map.set(Number((r as Record<string, unknown>).commodity_id), {
-      retailAvg: (r as Record<string, unknown>).retail_avg as number | null,
-      wholesaleAvg: (r as Record<string, unknown>).wholesale_avg as number | null,
+    const row = r as Record<string, unknown>;
+    const districtId = Number(row.district_id);
+    const commodityId = Number(row.commodity_id);
+    let m = byDistrict.get(districtId);
+    if (!m) {
+      m = new Map();
+      byDistrict.set(districtId, m);
+    }
+    m.set(commodityId, {
+      retailAvg: (row.retail_avg as number | null) ?? null,
+      wholesaleAvg: (row.wholesale_avg as number | null) ?? null,
     });
   }
-  return map;
+  return byDistrict;
 }
 
 /** Replace master data atomically enough for our purposes. */
