@@ -50,6 +50,21 @@
     "crons": ["* * * * *", "2 0 * * *"]
   },
 
+  // The name the site answers on. A custom domain and not a route: the
+  // certificate for the name is issued for it, and the worker is reached
+  // inside cloudflare instead of over the public internet.
+  //
+  // The workers.dev address stays on as well: the pages front forwards to
+  // it, and it is the address that does not depend on anybody's free
+  // domain service.
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "dordekha.dpdns.org",
+      "custom_domain": true
+    }
+  ],
+
   "vars": {
     "SITE_ORIGIN": "https://dordekha.pages.dev",
     "SOURCE_NAME": "কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM)",

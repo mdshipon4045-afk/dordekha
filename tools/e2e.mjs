@@ -164,7 +164,10 @@ async function post(path, body, headers = {}) {
   const fact = await get(`/api/v1/price?commodity=${q("পেঁয়াজ")}&district=${q("ঢাকা")}`);
   const j = JSON.parse(fact.text);
   const url = j.canonical_url;
-  const path = url.replace(BASE, "");
+  // The canonical url carries the site's own origin, which is not
+  // necessarily the one the test runs against. Only the path matters.
+  const parsed = new URL(url);
+  const path = parsed.pathname + parsed.search;
   const r = await get(path);
   check("per-fact permalink renders", r.status === 200 && normBn(r.text).includes(normBn("পেঁয়াজ")), `status=${r.status} path=${path}`);
   check("per-fact page has JSON-LD", r.text.includes('"@type":"Dataset"'));
