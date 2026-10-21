@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   API_KEY_PREFIX,
+  recordUsage,
   checkAccess,
   currentPeriod,
   enforceAccess,
@@ -154,6 +155,46 @@ describe("whether a licence may be used", () => {
       new Date("2026-11-01T00:00:00.000Z"),
     );
     expect(decision.ok).toBe(true);
+  });
+});
+
+describe("counting the calls", () => {
+  it("increments the counter even on a database that has not been brought up to date", async () => {
+    // The fuller statement needs columns the daily upkeep adds. A database
+    // without them must still count, or the quota would never be reached.
+    const statements: string[] = [];
+    const d1 = fakeD1([
+      (sql) => {
+        statements.push(sql);
+        if (/burst_count/.test(sql)) throw new Error("no such column: burst_count");
+        return { results: [] };
+      },
+    ]);
+    const kv = fakeKV();
+    const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
+
+    await recordUsage(env, licence(), "/api/v1/latest", "api", 200);
+
+    // The fallback ran: the counter moved on its own.
+    expect(statements.some((s) => /calls_used = calls_used \+ 1/.test(s))).toBe(true);
+  });
+
+  it("counts on a database that has the columns", async () => {
+    const statements: string[] = [];
+    const d1 = fakeD1([
+      (sql) => {
+        statements.push(sql);
+        return { results: [] };
+      },
+    ]);
+    const kv = fakeKV();
+    const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
+
+    await recordUsage(env, licence(), "/api/v1/latest", "api", 200);
+
+    const update = statements.find((s) => /UPDATE license/.test(s));
+    expect(update).toContain("burst_count");
+    expect(update).toContain("period");
   });
 });
 

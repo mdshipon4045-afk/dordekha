@@ -58,6 +58,7 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
         bind: (...args: unknown[]) => {
           bound.push(args);
           return {
+            sql: trimmed,
             first: async <T>() => {
               const { results } = rowsFor(trimmed, args);
               return (results[0] ?? null) as T | null;
@@ -91,7 +92,12 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
     batch: async (statementsToRun: unknown[]) => {
       const out: unknown[] = [];
       for (const s of statementsToRun as Array<{ sql?: string }>) {
-        if (s?.sql) statements.push({ sql: s.sql.trim(), kind: "write" });
+        if (s?.sql) {
+          // The statement was already recorded when it was prepared. A real
+          // batch runs it, so a responder that refuses one of them fails the
+          // batch too.
+          rowsFor(s.sql.trim());
+        }
         out.push({ success: true, meta: { changes: 0 } });
       }
       return out;

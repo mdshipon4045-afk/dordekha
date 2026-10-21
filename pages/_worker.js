@@ -35,6 +35,7 @@ const FORWARD_REQUEST_HEADERS = [
   "accept-encoding",
   "x-api-key",
   "authorization",
+  "x-admin-token",
   "content-type",
   "user-agent",
 ];

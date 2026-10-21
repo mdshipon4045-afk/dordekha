@@ -260,6 +260,11 @@ export async function verifyLicense(env: Env, key: string): Promise<LicenseRecor
  * period is not this month the monthly counter starts again at one, and
  * when the stored window is not this one the burst counter does the same.
  * One write per call, and a refused call does not get here at all.
+ *
+ * The fuller statement needs columns that the worker adds in its daily
+ * upkeep. On a database that has not had that upkeep yet the statement
+ * fails, and the count is still worth keeping — so the counter is
+ * incremented on its own instead.
  */
 export async function recordUsage(
   env: Env,
@@ -290,7 +295,20 @@ export async function recordUsage(
         .bind(licence.id, now.toISOString(), endpoint, source, status),
     ]);
   } catch {
-    /* a record is not a requirement: the call itself already succeeded */
+    // The database has not been brought up to date yet. The counter still
+    // has to move, or the quota would never be reached.
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE license SET calls_used = calls_used + 1 WHERE id = ?`).bind(licence.id),
+        env.DB
+          .prepare(
+            `INSERT INTO usage_event (license_id, at, endpoint, source, status) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .bind(licence.id, now.toISOString(), endpoint, source, status),
+      ]);
+    } catch {
+      /* a record is not a requirement: the call itself already succeeded */
+    }
   }
 }
 
@@ -402,8 +420,8 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
   const window = burstWindow();
 
   await env.DB.prepare(
-    `INSERT INTO license (id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit, period, burst_count, burst_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 0, ?)`,
+    `INSERT INTO license (id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?)`,
   )
     .bind(
       id,
@@ -414,8 +432,6 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
       createdAt,
       expiresAt,
       limits.monthlyQuota,
-      period,
-      window,
     )
     .run();
 
