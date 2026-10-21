@@ -16,9 +16,13 @@
  *   - D1 reads 5,000,000 rows a day. So the monthly counter is a counter
  *     (`license.calls_used`), never a `COUNT(*)` over the event table: a
  *     count over 50,000 events would cost 50,000 rows on every check.
- *   - D1 writes 100,000 rows a day. So one keyed call costs one write.
- *   - KV writes 1,000 a day. So the burst guard writes once per window,
- *     not once per call.
+ *   - D1 writes 100,000 rows a day. So a keyed call costs exactly **one**
+ *     write, and a refused call costs **none**. A script holding a key
+ *     that is over its quota must not be able to spend the ingest's write
+ *     budget by being refused.
+ *   - KV writes 1,000 a day, and the ingest needs most of them. So the
+ *     request path writes nothing to KV at all: the licence is read from
+ *     the cache, and the counters live in the database row.
  *
  * THE COMMERCIAL GATE
  * -------------------
@@ -73,6 +77,10 @@ export interface LicenseRecord {
   callsLimit: number;
   /** The calendar month the counter belongs to, e.g. "2026-10". */
   period: string | null;
+  /** Calls in the current burst window. */
+  burstCount: number;
+  /** The burst window the count belongs to. */
+  burstWindow: string | null;
 }
 
 /* ── The key ───────────────────────────────────────────────────────────────── */
@@ -102,29 +110,42 @@ export async function hashApiKey(key: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** The key a request carries, if it carries one that could be a key. */
+/**
+ * The credential a request carries, if it carries one.
+ *
+ * A credential that is not one of our keys is still a credential: it is
+ * reported as an invalid key rather than ignored, so a client with a
+ * broken key is told so instead of quietly getting the free service.
+ */
 export function keyFromRequest(request: Request): string | null {
   const auth = request.headers.get("authorization");
   if (auth) {
-    const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
-    if (m) {
-      const key = m[1]!.trim();
-      return key.startsWith(API_KEY_PREFIX) ? key : null;
-    }
+    const m = /^(?:Bearer|Token)\s+(.+)$/i.exec(auth.trim());
+    if (m) return m[1]!.trim();
   }
   const xkey = request.headers.get("x-api-key");
-  if (xkey) {
-    const key = xkey.trim();
-    return key.startsWith(API_KEY_PREFIX) ? key : null;
-  }
+  if (xkey) return xkey.trim();
   return null;
 }
 
-/* ── The period ───────────────────────────────────────────────────────────── */
+/** Does this look like one of our keys? */
+export function isOurKey(key: string): boolean {
+  return key.startsWith(API_KEY_PREFIX) && key.length >= API_KEY_PREFIX.length + 20;
+}
+
+/* ── The period and the window ─────────────────────────────────────────────── */
 
 /** The calendar month a counter belongs to, in UTC. */
 export function currentPeriod(now: Date = new Date()): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Five minutes: the burst window. */
+export const BURST_WINDOW_MS = 5 * 60 * 1000;
+
+/** The window id a moment belongs to. */
+export function burstWindow(now: Date = new Date()): string {
+  return String(Math.floor(now.getTime() / BURST_WINDOW_MS));
 }
 
 /* ── Access ────────────────────────────────────────────────────────────────── */
@@ -139,7 +160,9 @@ export interface AccessCheck {
  * May this licence be used right now?
  *
  * A counter from an earlier month is not a used quota — the allowance is
- * per calendar month, so a stale counter reads as zero.
+ * per calendar month, so a stale counter reads as zero. The same is true
+ * of the burst count: a count from an earlier window is a count of a
+ * window that has closed.
  */
 export function checkAccess(lic: LicenseRecord, now: Date = new Date()): AccessCheck {
   if (!lic.active) {
@@ -152,14 +175,25 @@ export function checkAccess(lic: LicenseRecord, now: Date = new Date()): AccessC
   if (lic.callsLimit > 0 && used >= lic.callsLimit) {
     return { ok: false, status: 429, reason: "এই মাসের কোটা শেষ।" };
   }
+  const limits = planLimits(lic.plan);
+  if (limits.burstLimit > 0 && lic.burstWindow === burstWindow(now) && lic.burstCount >= limits.burstLimit) {
+    return { ok: false, status: 429, reason: "খুব দ্রুত অনুরোধ আসছে। একটু পরে আবার চেষ্টা করুন।" };
+  }
   return { ok: true, status: 200 };
 }
 
 /* ── Storage ───────────────────────────────────────────────────────────────── */
 
 const LIC_CACHE_PREFIX = "lic:";
-const LIC_CACHE_TTL = 60; // seconds
-const BURST_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * How long the cached licence — and its counters — may be stale.
+ *
+ * Short, because the counters are what the quota is checked against, and
+ * because a stale counter is how a client gets more than it paid for.
+ * A cache miss is one indexed row, so a short life is cheap: 1,440 reads
+ * a day per licence against a five million budget.
+ */
+const LIC_CACHE_TTL = 10;
 
 function mapLicenseRow(row: Record<string, unknown>): LicenseRecord {
   return {
@@ -174,19 +208,19 @@ function mapLicenseRow(row: Record<string, unknown>): LicenseRecord {
     callsUsed: Number(row.calls_used ?? 0),
     callsLimit: Number(row.calls_limit ?? 0),
     period: (row.period as string | null) ?? null,
+    burstCount: Number(row.burst_count ?? 0),
+    burstWindow: (row.burst_window as string | null) ?? null,
   };
 }
 
 const LICENSE_COLUMNS =
-  "id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit, period";
+  "id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit, period, burst_count, burst_window";
 
 /**
  * Find the licence for a key.
  *
- * The cache comes first, as everywhere else. The cache holds the counter
- * too, so a burst of calls does not turn into a burst of database reads —
- * the counter can be up to a minute behind, which is stated rather than
- * hidden.
+ * The cache comes first, as everywhere else. The cache holds the counters
+ * too, so a burst of calls does not turn into a burst of database reads.
  */
 export async function verifyLicense(env: Env, key: string): Promise<LicenseRecord | null> {
   const hash = await hashApiKey(key);
@@ -222,8 +256,10 @@ export async function verifyLicense(env: Env, key: string): Promise<LicenseRecor
 /**
  * Count the call.
  *
- * One statement, and the month rolls over in the same statement: when the
- * stored period is not this month the counter starts again at one.
+ * One statement, and both rollovers happen inside it: when the stored
+ * period is not this month the monthly counter starts again at one, and
+ * when the stored window is not this one the burst counter does the same.
+ * One write per call, and a refused call does not get here at all.
  */
 export async function recordUsage(
   env: Env,
@@ -232,49 +268,29 @@ export async function recordUsage(
   source: string,
   status: number,
 ): Promise<void> {
-  const period = currentPeriod();
+  const now = new Date();
+  const period = currentPeriod(now);
+  const window = burstWindow(now);
   try {
     await env.DB.batch([
       env.DB
         .prepare(
           `UPDATE license
-              SET calls_used = CASE WHEN period = ? THEN calls_used + 1 ELSE 1 END,
-                  period = ?
+              SET calls_used  = CASE WHEN period = ?       THEN calls_used  + 1 ELSE 1 END,
+                  period      = ?,
+                  burst_count = CASE WHEN burst_window = ? THEN burst_count + 1 ELSE 1 END,
+                  burst_window = ?
             WHERE id = ?`,
         )
-        .bind(period, period, licence.id),
+        .bind(period, period, window, window, licence.id),
       env.DB
         .prepare(
           `INSERT INTO usage_event (license_id, at, endpoint, source, status) VALUES (?, ?, ?, ?, ?)`,
         )
-        .bind(licence.id, new Date().toISOString(), endpoint, source, status),
+        .bind(licence.id, now.toISOString(), endpoint, source, status),
     ]);
   } catch {
     /* a record is not a requirement: the call itself already succeeded */
-  }
-}
-
-/**
- * The burst guard.
- *
- * KV's free tier allows a thousand writes a day, so the window is five
- * minutes rather than one: a busy client writes once per window, not once
- * per call. The count is approximate under concurrency, which is what a
- * burst guard is allowed to be.
- */
-async function burstExceeded(env: Env, licence: LicenseRecord, now: Date): Promise<boolean> {
-  const limits = planLimits(licence.plan);
-  if (limits.burstLimit <= 0) return false;
-  const window = Math.floor(now.getTime() / BURST_WINDOW_MS);
-  const key = `burst:${licence.keyHash}:${window}`;
-  try {
-    const raw = await env.CACHE.get(key);
-    const count = raw ? Number(raw) : 0;
-    if (count >= limits.burstLimit) return true;
-    await env.CACHE.put(key, String(count + 1), { expirationTtl: 600 });
-    return false;
-  } catch {
-    return false; // a guard that cannot see is a guard that does not block
   }
 }
 
@@ -291,6 +307,11 @@ export interface AccessDecision {
  * A request with no key is always allowed: the public pages and the free
  * API are the citation surface, and a paywall in front of them would cost
  * more traffic than it could ever earn in licences.
+ *
+ * A request with a key that is not ours is refused. A key that is ours but
+ * is unknown, expired, over its quota or bursting is refused too — and
+ * refused without a single write, so that being refused cannot be turned
+ * into a way of spending the database's write budget.
  */
 export async function enforceAccess(
   env: Env,
@@ -300,6 +321,10 @@ export async function enforceAccess(
 ): Promise<AccessDecision> {
   const key = keyFromRequest(request);
   if (!key) return { ok: true, status: 200, licence: null };
+
+  if (!isOurKey(key)) {
+    return { ok: false, status: 401, licence: null, reason: "API key চেনা যায়নি।" };
+  }
 
   let licence: LicenseRecord | null = null;
   try {
@@ -313,14 +338,8 @@ export async function enforceAccess(
 
   const check = checkAccess(licence);
   if (!check.ok) {
-    await recordUsage(env, licence, endpoint, source, check.status);
+    // No write. A refused call must not cost the database anything.
     return { ok: false, status: check.status, licence, reason: check.reason };
-  }
-
-  const now = new Date();
-  if (await burstExceeded(env, licence, now)) {
-    await recordUsage(env, licence, endpoint, source, 429);
-    return { ok: false, status: 429, licence, reason: "খুব দ্রুত অনুরোধ আসছে। একটু পরে আবার চেষ্টা করুন।" };
   }
 
   await recordUsage(env, licence, endpoint, source, 200);
@@ -380,10 +399,11 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
   const expiresAt =
     months > 0 ? new Date(Date.now() + months * 30 * 86_400_000).toISOString() : null;
   const period = currentPeriod();
+  const window = burstWindow();
 
   await env.DB.prepare(
-    `INSERT INTO license (id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit, period)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+    `INSERT INTO license (id, key_hash, plan, label, contact, created_at, expires_at, active, calls_used, calls_limit, period, burst_count, burst_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 0, ?)`,
   )
     .bind(
       id,
@@ -395,6 +415,7 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
       expiresAt,
       limits.monthlyQuota,
       period,
+      window,
     )
     .run();
 
@@ -411,6 +432,8 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
     callsUsed: 0,
     callsLimit: limits.monthlyQuota,
     period,
+    burstCount: 0,
+    burstWindow: window,
   };
 }
 

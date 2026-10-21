@@ -797,6 +797,15 @@ export async function replaceMasterData(db: D1Database, master: MasterData): Pro
     );
   }
 
+  // The national aggregate is not a district, but it needs a row so that
+  // it can never be rendered as "0" in a district column. The upstream's
+  // master does not include it, so it is put back after the replace.
+  chunks.push(
+    db
+      .prepare(`INSERT OR IGNORE INTO district (id,name_bn,name_en,division_id) VALUES (0,?,?,0)`)
+      .bind("জাতীয়", "National"),
+  );
+
   for (let i = 0; i < chunks.length; i += 100) {
     await db.batch(chunks.slice(i, i + 100));
   }

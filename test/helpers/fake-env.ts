@@ -24,19 +24,21 @@ export interface FakeD1 {
   reset(): void;
 }
 
-export type Responder = (sql: string) => { results: unknown[] } | null;
+export type Responder = (sql: string, bound?: unknown[]) => { results: unknown[] } | null;
 
 /**
  * A D1 double. `responders` maps a SQL fragment to the rows it returns;
- * the first matching fragment wins.
+ * the first matching fragment wins. The responder also receives the values
+ * that were bound to the statement, so a responder can answer a lookup by
+ * its key the way the database would.
  */
 export function fakeD1(responders: Responder[] = []): FakeD1 {
   const statements: RecordedStatement[] = [];
   const bound: unknown[][] = [];
 
-  function rowsFor(sql: string): { results: unknown[] } {
+  function rowsFor(sql: string, args?: unknown[]): { results: unknown[] } {
     for (const responder of responders) {
-      const hit = responder(sql);
+      const hit = responder(sql, args);
       if (hit) return hit;
     }
     return { results: [] };
@@ -57,15 +59,15 @@ export function fakeD1(responders: Responder[] = []): FakeD1 {
           bound.push(args);
           return {
             first: async <T>() => {
-              const { results } = rowsFor(trimmed);
+              const { results } = rowsFor(trimmed, args);
               return (results[0] ?? null) as T | null;
             },
             all: async <T>() => {
-              const { results } = rowsFor(trimmed);
+              const { results } = rowsFor(trimmed, args);
               return { results: results as T[], success: true, meta: {} };
             },
             run: async () => {
-              const { results } = rowsFor(trimmed);
+              const { results } = rowsFor(trimmed, args);
               return { results, success: true, meta: { changes: results.length } };
             },
             raw: async () => new ArrayBuffer(0),

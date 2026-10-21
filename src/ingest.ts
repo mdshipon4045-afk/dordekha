@@ -164,7 +164,24 @@ async function budgetUsed(env: Env): Promise<number> {
 
 async function budgetAdd(env: Env, rows: number): Promise<void> {
   const used = (await budgetUsed(env)) + rows;
-  await env.CACHE.put(BUDGET_KEY(today()), String(used), { expirationTtl: 60 * 60 * 30 });
+  await putQuietly(env, BUDGET_KEY(today()), String(used), 60 * 60 * 30);
+}
+
+/**
+ * A cache write that must never break the tick.
+ *
+ * The free tier allows a thousand writes a day, and the ingest needs most
+ * of them. If a write ever fails — because the budget ran out — the tick
+ * has to carry on: an unguarded throw here would kill the tick, the job
+ * would never advance, and the ingest would write the same four districts
+ * over and over until the database's write budget went too.
+ */
+async function putQuietly(env: Env, key: string, value: string, ttl: number): Promise<void> {
+  try {
+    await env.CACHE.put(key, value, { expirationTtl: ttl });
+  } catch {
+    /* a cache write failure must never break a request */
+  }
 }
 
 /** Is the backfill paused until tomorrow? */
@@ -181,46 +198,56 @@ export async function backfillPaused(env: Env): Promise<boolean> {
  */
 const RANGE_CHECK_KEY = (day: string) => `ingest:range-checked:${day}`;
 
+type HistoryDecision =
+  /** There is plenty of history; nothing to do. */
+  | { kind: "enough" }
+  /** The indexes are not in place yet, so a backfill has to wait. */
+  | { kind: "wait-for-index" }
+  /** The answer was already given today, or could not be read. */
+  | { kind: "check-later" }
+  /** The history is thinner than it should be. */
+  | { kind: "thin"; days: number };
+
 /**
- * Should a backfill start? The answer is `null` when the question does not
- * need asking.
+ * What should the tick do about the history?
  *
  * The cached aggregates already hold how far back the history reaches, and
- * reading them is free. So the price table is only scanned when the cache
- * says the history is thin — that is, only when the answer could change
- * what the tick does — and at most once a day after that.
+ * reading them is free. The index check costs a handful of rows. Only the
+ * database scan is expensive, and it happens at most once a day, and only
+ * when the answer could change what the tick does.
  *
  * Before this, the tick read the whole price table every minute, whether or
  * not it had any work to do. At 11,594 rows and 1,440 ticks a day that is
  * 16.7 million rows against a 5 million budget, and the quota was gone by
  * the middle of the afternoon.
- *
- * Nothing is written to the cache on the common path: KV's free tier allows
- * a thousand writes a day, and a write per tick would spend it.
  */
-async function historyRangeCheap(env: Env): Promise<{ first: string | null; last: string | null; days: number } | null> {
+async function historyDecision(env: Env): Promise<HistoryDecision> {
   const cached = await getAggregates(env);
-  if (cached.days >= HISTORY_DAYS * 0.8) return null;
+  if (cached.days >= HISTORY_DAYS * 0.8) return { kind: "enough" };
 
-  // The cache says the history is thin. Now the truth is worth paying for —
-  // but only once a day, because a tick that cannot act must not keep
-  // asking the same question.
+  // The index check comes before the scan, because a backfill without the
+  // indexes reads the whole table for every batch of districts — and the
+  // scan must not be repeated every minute while we wait for the upkeep.
+  if (!(await hasRequiredIndexes(env))) return { kind: "wait-for-index" };
+
   const day = today();
-  if (await env.CACHE.get(RANGE_CHECK_KEY(day))) return null;
+  if (await env.CACHE.get(RANGE_CHECK_KEY(day))) return { kind: "check-later" };
 
   let range: { first: string | null; last: string | null; days: number };
   try {
     range = await historyRange(env.DB);
   } catch {
-    // The read budget is spent. The answer is unknown, so no backfill is
+    // The read budget is spent. The answer is unknown, so nothing is
     // started on a guess — but the daily refresh still has work to do, and
     // the tick must not fall over. The marker is short-lived, so the
     // question is asked again in an hour rather than every minute.
-    await env.CACHE.put(RANGE_CHECK_KEY(day), "failed", { expirationTtl: 60 * 60 });
-    return null;
+    await putQuietly(env, RANGE_CHECK_KEY(day), "failed", 60 * 60);
+    return { kind: "check-later" };
   }
-  await env.CACHE.put(RANGE_CHECK_KEY(day), "1", { expirationTtl: 60 * 60 * 48 });
-  return range;
+
+  await putQuietly(env, RANGE_CHECK_KEY(day), "1", 60 * 60 * 48);
+  if (range.days >= HISTORY_DAYS * 0.8) return { kind: "enough" };
+  return { kind: "thin", days: range.days };
 }
 
 /**
@@ -240,14 +267,14 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
 
   // The history claim on the site has to be true, so when it is thinner than
   // it should be, a backfill runs before the daily refresh.
-  const range = await historyRangeCheap(env);
-  if (range && range.days < HISTORY_DAYS * 0.8 && !(await backfillPaused(env))) {
+  const decision = await historyDecision(env);
+  if (decision.kind === "wait-for-index") {
     // A backfill without the indexes reads the whole price table for every
     // batch of districts. It waits for them instead.
-    if (!(await hasRequiredIndexes(env))) {
-      return { action: "waiting-for-index" };
-    }
-    console.log(`history is ${range.days} days — starting a backfill`);
+    return { action: "waiting-for-index" };
+  }
+  if (decision.kind === "thin" && !(await backfillPaused(env))) {
+    console.log(`history is ${decision.days} days — starting a backfill`);
     return { action: "backfill", job: await startBackfill(env) };
   }
   // No job running. Decide whether a daily refresh is due.
@@ -452,9 +479,17 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
     // Publish the daily digest to Telegram, once the date is complete.
     try {
       const { publishDigest } = await import("./telegram");
-      const res = await publishDigest(env, await buildDigestInput(env, current));
-      if (res.sent) console.log(`digest published for ${current}`);
-      else if (res.error) console.log(`digest skipped: ${res.error}`);
+      const digest = await buildDigestInput(env, current);
+      if (digest.masterEmpty) {
+        // The master data was being replaced while the sweep finished. The
+        // digest would say "no figures" on a day that has them, and it
+        // would never be sent again.
+        console.log(`digest skipped for ${current}: the catalogue is being replaced`);
+      } else {
+        const res = await publishDigest(env, digest);
+        if (res.sent) console.log(`digest published for ${current}`);
+        else if (res.error) console.log(`digest skipped: ${res.error}`);
+      }
     } catch (err) {
       console.error("digest failed", err);
     }
@@ -574,6 +609,13 @@ async function backfillNational(env: Env, job: IngestJob): Promise<void> {
  * commodities, ready to be turned into a message.
  */
 export async function buildDigestInput(env: Env, priceDate: string) {
+  // The master data is replaced by deleting and re-inserting it, so for a
+  // moment the catalogue is empty. A digest built in that moment would say
+  // "no figures today" on a day that has figures, and it would never be
+  // sent again. So the moment is detected.
+  const catalogue = await env.DB.prepare(`SELECT COUNT(*) AS c FROM commodity`).first<{ c: number }>();
+  const masterEmpty = (catalogue?.c ?? 0) === 0;
+
   const { results: cs } = await env.DB
     .prepare(`SELECT id, name_bn FROM commodity WHERE name_bn IN (?,?,?,?,?,?)`)
     .bind("পেঁয়াজ", "চাল", "আলু (দেশীয়)", "ডিম ফার্ম- লাল", "তৈল- সরিষা-দেশীয় -সাধারণ", "ডাল")
@@ -617,10 +659,12 @@ export async function buildDigestInput(env: Env, priceDate: string) {
     origin: env.SITE_ORIGIN.replace(/\/$/, ""),
     sourceName: env.SOURCE_NAME,
     featured,
+    masterEmpty,
   };
 }
 
-/** Refresh master data (weekly job). */
+/** Refresh the master data. The worker runs this once a day, after the
+ *  D1 read quota resets. */
 export async function refreshMaster(env: Env): Promise<{ districts: number; upazilas: number; commodities: number }> {
   const master = await fetchMasterData({ baseUrl: env.SOURCE_API });
   await replaceMasterData(env.DB, master);

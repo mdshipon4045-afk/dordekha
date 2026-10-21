@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { REQUIRED_INDEXES, ensureSchema, hasRequiredIndexes } from "../src/maintenance";
+import { REQUIRED_COLUMNS, REQUIRED_INDEXES, ensureSchema, hasRequiredIndexes } from "../src/maintenance";
 import type { Env } from "../src/types";
 import { fakeD1, fakeKV } from "./helpers/fake-env";
 
@@ -54,7 +54,10 @@ describe("the worker keeps its own indexes", () => {
         sql.includes("sqlite_master")
           ? { results: REQUIRED_INDEXES.map((i) => ({ name: i.name })) }
           : null,
-      (sql) => (sql.includes("table_info") ? { results: [{ name: "period" }] } : null),
+      (sql) =>
+        sql.includes("table_info")
+          ? { results: REQUIRED_COLUMNS.map((c) => ({ name: c.name })) }
+          : null,
     ]);
     const kv = fakeKV();
     const env = { DB: d1.db, CACHE: kv.kv } as unknown as Env;
@@ -141,7 +144,10 @@ describe("the worker keeps its own indexes", () => {
 
   it("leaves the column alone when it is already there", async () => {
     const d1 = fakeD1([
-      (sql) => (sql.includes("table_info") ? { results: [{ name: "period" }] } : null),
+      (sql) =>
+        sql.includes("table_info")
+          ? { results: REQUIRED_COLUMNS.map((c) => ({ name: c.name })) }
+          : null,
       (sql) => (sql.includes("sqlite_master") ? { results: [] } : null),
     ]);
     const kv = fakeKV();

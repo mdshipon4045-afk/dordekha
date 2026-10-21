@@ -6,6 +6,7 @@ import {
   enforceAccess,
   generateApiKey,
   hashApiKey,
+  isOurKey,
   keyFromRequest,
   planLimits,
   type LicenseRecord,
@@ -35,6 +36,8 @@ function licence(over: Partial<LicenseRecord> = {}): LicenseRecord {
     callsLimit: 1000,
     // The counter belongs to the month the calls were made in.
     period: currentPeriod(new Date("2026-10-21T00:00:00.000Z")),
+    burstCount: 0,
+    burstWindow: null,
     ...over,
   };
 }
@@ -72,9 +75,13 @@ describe("the key itself", () => {
     expect(keyFromRequest(new Request("https://x.test"))).toBeNull();
   });
 
-  it("ignores a header that carries something else", () => {
+  it("reports a credential that is not one of ours, rather than ignoring it", () => {
+    // A client with a broken key must be told so. Silently treating it as
+    // "no key" hands it the free service and hides the mistake.
     const req = new Request("https://x.test", { headers: { Authorization: "Bearer not-a-key" } });
-    expect(keyFromRequest(req)).toBeNull();
+    expect(keyFromRequest(req)).toBe("not-a-key");
+    expect(isOurKey("not-a-key")).toBe(false);
+    expect(isOurKey(generateApiKey())).toBe(true);
   });
 });
 
@@ -151,64 +158,110 @@ describe("whether a licence may be used", () => {
 });
 
 describe("enforcing access on a request", () => {
-  function envFor(lic: LicenseRecord | null) {
+  /**
+   * The double answers the licence lookup by its bound hash, the way the
+   * database does. A double that answered any lookup would let a test pass
+   * even if the key were never matched to its licence.
+   */
+  async function envFor(lic: LicenseRecord | null) {
     const d1 = fakeD1([
-      (sql) =>
-        sql.includes("FROM license")
-          ? {
-              results: lic
-                ? [
-                    {
-                      id: lic.id,
-                      key_hash: lic.keyHash,
-                      plan: lic.plan,
-                      label: lic.label,
-                      contact: lic.contact,
-                      created_at: lic.createdAt,
-                      expires_at: lic.expiresAt,
-                      active: lic.active ? 1 : 0,
-                      calls_used: lic.callsUsed,
-                      calls_limit: lic.callsLimit,
-                      period: lic.period,
-                    },
-                  ]
-                : [],
-            }
-          : null,
+      (sql, bound) => {
+        if (!sql.includes("FROM license")) return null;
+        const wanted = bound?.[0];
+        if (!lic || wanted !== lic.keyHash) return { results: [] };
+        return {
+          results: [
+            {
+              id: lic.id,
+              key_hash: lic.keyHash,
+              plan: lic.plan,
+              label: lic.label,
+              contact: lic.contact,
+              created_at: lic.createdAt,
+              expires_at: lic.expiresAt,
+              active: lic.active ? 1 : 0,
+              calls_used: lic.callsUsed,
+              calls_limit: lic.callsLimit,
+              period: lic.period,
+              burst_count: lic.burstCount,
+              burst_window: lic.burstWindow,
+            },
+          ],
+        };
+      },
     ]);
     const kv = fakeKV();
     return { env: { DB: d1.db, CACHE: kv.kv } as unknown as Env, d1, kv };
   }
 
   it("lets an anonymous request through — the citation surface must not break", async () => {
-    const { env } = envFor(null);
+    const { env, d1 } = await envFor(null);
     const decision = await enforceAccess(env, new Request("https://x.test/api/v1/latest"), "/api/v1/latest", "api");
     expect(decision.ok).toBe(true);
     expect(decision.licence).toBeNull();
     expect(decision.status).toBe(200);
+    // Not one row written, not one key written.
+    expect(d1.statements.filter((s) => s.kind === "write")).toEqual([]);
   });
 
   it("refuses a key that does not exist", async () => {
-    const { env } = envFor(null);
+    const { env } = await envFor(null);
     const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": generateApiKey() } });
     const decision = await enforceAccess(env, req, "/api/v1/latest", "api");
     expect(decision.ok).toBe(false);
     expect(decision.status).toBe(401);
   });
 
-  it("refuses a key whose licence is over its quota", async () => {
-    const { env } = envFor(licence({ callsUsed: 1000, callsLimit: 1000 }));
-    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": generateApiKey() } });
+  it("refuses a credential that is not one of ours", async () => {
+    const { env } = await envFor(null);
+    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": "sk_someone_elses_key" } });
+    const decision = await enforceAccess(env, req, "/api/v1/latest", "api");
+    expect(decision.ok).toBe(false);
+    expect(decision.status).toBe(401);
+  });
+
+  it("refuses a key whose licence is over its quota, and writes nothing", async () => {
+    // A refused call must cost the database nothing: otherwise a script
+    // holding an over-quota key can spend the ingest's write budget by
+    // being refused.
+    const key = generateApiKey();
+    const { env, d1 } = await envFor(
+      licence({ keyHash: await hashApiKey(key), callsUsed: 1000, callsLimit: 1000 }),
+    );
+    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": key } });
     const decision = await enforceAccess(env, req, "/api/v1/latest", "api");
     expect(decision.ok).toBe(false);
     expect(decision.status).toBe(429);
+    expect(d1.statements.filter((s) => s.kind === "write")).toEqual([]);
   });
 
   it("lets a live key through and says which licence it is", async () => {
-    const { env } = envFor(licence());
-    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": generateApiKey() } });
+    const key = generateApiKey();
+    const { env, d1 } = await envFor(licence({ keyHash: await hashApiKey(key) }));
+    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": key } });
     const decision = await enforceAccess(env, req, "/api/v1/latest", "api");
     expect(decision.ok).toBe(true);
     expect(decision.licence?.plan).toBe("api");
+    // One call, one batch of writes: the counter and the event.
+    const writes = d1.statements.filter((s) => s.kind === "write");
+    expect(writes.length).toBe(2);
+  });
+
+  it("refuses a key that is bursting", async () => {
+    const key = generateApiKey();
+    const now = new Date();
+    const window = String(Math.floor(now.getTime() / (5 * 60 * 1000)));
+    const { env } = await envFor(
+      licence({
+        keyHash: await hashApiKey(key),
+        plan: "free",
+        burstCount: 60,
+        burstWindow: window,
+      }),
+    );
+    const req = new Request("https://x.test/api/v1/latest", { headers: { "X-API-Key": key } });
+    const decision = await enforceAccess(env, req, "/api/v1/latest", "api");
+    expect(decision.ok).toBe(false);
+    expect(decision.status).toBe(429);
   });
 });

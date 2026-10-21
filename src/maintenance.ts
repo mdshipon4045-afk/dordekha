@@ -69,6 +69,12 @@ export interface RequiredColumn {
  */
 export const REQUIRED_COLUMNS: RequiredColumn[] = [
   { table: "license", name: "period", sql: "ALTER TABLE license ADD COLUMN period TEXT" },
+  { table: "license", name: "burst_count", sql: "ALTER TABLE license ADD COLUMN burst_count INTEGER" },
+  {
+    table: "license",
+    name: "burst_window",
+    sql: "ALTER TABLE license ADD COLUMN burst_window TEXT",
+  },
 ];
 
 export interface MaintenanceResult {
@@ -157,7 +163,11 @@ export async function ensureSchema(env: Env): Promise<MaintenanceResult> {
       await env.DB.prepare(column.sql).run();
       columnsAdded.push(`${column.table}.${column.name}`);
     } catch (err) {
-      failed.push(`${column.table}.${column.name}: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      // Another run added the column first. That is the state we wanted, so
+      // it is not a failure.
+      if (/duplicate column name/i.test(message)) continue;
+      failed.push(`${column.table}.${column.name}: ${message}`);
     }
   }
 

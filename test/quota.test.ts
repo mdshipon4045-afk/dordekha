@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cronTick, HISTORY_DAYS } from "../src/ingest";
+import { REQUIRED_INDEXES } from "../src/maintenance";
 import type { Env } from "../src/types";
 import { fakeD1, fakeKV } from "./helpers/fake-env";
 
@@ -59,6 +60,11 @@ function d1WithJob(job: unknown, priceTableDays = 4) {
     (sql) =>
       sql.includes("FROM price_daily")
         ? { results: [{ first: "2026-06-23", last: "2026-10-19", days: priceTableDays }] }
+        : null,
+    // The indexes are in place, so a backfill is allowed to start.
+    (sql) =>
+      sql.includes("sqlite_master")
+        ? { results: REQUIRED_INDEXES.map((i) => ({ name: i.name })) }
         : null,
   ]);
 }

@@ -94,14 +94,14 @@ const commodities = new Map();
   const ci = (n) => cCols.indexOf(n);
   for (const r of collect("commodity")) {
     const id = Number(r[ci("id")]);
-    const groupId = Number(r[ci("commodity_group_id")] ?? 0);
+    const groupId = Number(r[ci("group_id")] ?? 0);
     commodities.set(id, {
       bn: r[ci("name_bn")],
       en: r[ci("name_en")],
       group: groupId,
       groupBn: groups.get(groupId)?.bn ?? "",
       unitRetail: num(r[ci("unit_retail")]),
-      unitWholesale: num(r[ci("unit_whole_sale")]),
+      unitWholesale: num(r[ci("unit_wholesale")]),
     });
   }
 }

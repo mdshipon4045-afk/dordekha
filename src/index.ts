@@ -239,7 +239,9 @@ export default {
       if (path.startsWith("/internal/")) {
         const token = env.ADMIN_TOKEN;
         const provided = request.headers.get("X-Admin-Token") ?? url.searchParams.get("token");
-        if (token && provided !== token) {
+        // Fail closed. A missing token must not open the door: the routes
+        // behind this guard mint working API keys and change the schema.
+        if (!token || provided !== token) {
           return json({ error: "Forbidden" }, ctxR, 403);
         }
         if (path === "/internal/ingest/start") {
