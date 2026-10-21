@@ -1,6 +1,6 @@
 // One-shot status check for the live deployment.
 //   node tools/status.mjs
-const BASE = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const BASE = process.env.BASE ?? "https://dordekha.pages.dev";
 const TOKEN = process.env.ADMIN_TOKEN ?? "";
 
 async function j(path, init) {

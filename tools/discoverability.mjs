@@ -6,7 +6,7 @@
  * search-facing metadata of the pages that carry the business.
  */
 
-const BASE = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const BASE = process.env.BASE ?? "https://dordekha.pages.dev";
 
 async function get(path) {
   const res = await fetch(`${BASE}${path}`);

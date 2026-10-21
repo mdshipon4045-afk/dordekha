@@ -100,7 +100,7 @@
 আপনাদের কাজে যা লাগবে তা আমাদের কাছে আছে: কোন তারিখে কোন জেলায় পণ্যের
 দাম ছিল, তা একটি লিংকে যাচাই করা যায় — যেমন
 
-    https://dordekha.shouroveh9.workers.dev/price/পেঁয়াজ/ঢাকা/2026-10-19
+    https://dordekha.pages.dev/price/পেঁয়াজ/ঢাকা/2026-10-19
 
 ৬৪ জেলা × ৪৪৭ পণ্য, খুচরা ও পাইকারি — প্রতিটি সারিতে তারিখ, উৎস ও
 ইউনিট-গুণক সংরক্ষিত। যেখানে উৎসে তথ্য নেই, সেখানে ফাঁকা রাখা হয়েছে; কোনো
@@ -119,8 +119,8 @@
 
 বিনীত,
 [নাম]
-দরদেখা — https://dordekha.shouroveh9.workers.dev
-মূল্য: https://dordekha.shouroveh9.workers.dev/pricing
+দরদেখা — https://dordekha.pages.dev
+মূল্য: https://dordekha.pages.dev/pricing
 ```
 
 ### টেমপ্লেট খ — অ্যাগ্রো-টেক
@@ -147,7 +147,7 @@
 
 বিনীত,
 [নাম]
-দরদেখা — https://dordekha.shouroveh9.workers.dev/pricing
+দরদেখা — https://dordekha.pages.dev/pricing
 ```
 
 ### টেমপ্লেট গ — সংবাদপত্র/গবেষক
@@ -171,7 +171,7 @@
 
 বিনীত,
 [নাম]
-দরদেখা — https://dordekha.shouroveh9.workers.dev
+দরদেখা — https://dordekha.pages.dev
 ```
 
 ---
@@ -198,7 +198,7 @@
 >
 > যেখানে উৎসে তথ্য নেই, সেখানে কোনো সংখ্যা বানানো হয় না — ফাঁকাই থাকে।
 >
-> ▶ https://dordekha.shouroveh9.workers.dev
+> ▶ https://dordekha.pages.dev
 >
 > #বাজারদর #কৃষি #দরদেখা"
 
@@ -206,7 +206,7 @@
 >
 > "এই সপ্তাহের বাজারদর: [পণ্য] [জেলা] [সংখ্যা] ([তারিখ])।
 >
-> পুরো ছবিটা দেখুন: https://dordekha.shouroveh9.workers.dev/price
+> পুরো ছবিটা দেখুন: https://dordekha.pages.dev/price
 >
 > লিংকে গিয়ে যেকোনো পণ্য বা জেলার দর দেখতে পারবেন, আর প্রতিটি সংখ্যার
 > তারিখ ও উৎস লেখা থাকে।"

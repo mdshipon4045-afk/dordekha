@@ -1,6 +1,6 @@
 // Check the structure of the rebuilt content pages, so a design regression
 // shows up as a missing class rather than as a feeling.
-const base = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const base = process.env.BASE ?? "https://dordekha.pages.dev";
 
 const pages = ["/", "/dataset", "/methodology", "/licence", "/api", "/price", "/verify"];
 let bad = 0;

@@ -51,7 +51,7 @@
   },
 
   "vars": {
-    "SITE_ORIGIN": "https://dordekha.shouroveh9.workers.dev",
+    "SITE_ORIGIN": "https://dordekha.pages.dev",
     "SOURCE_NAME": "কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM)",
     "SOURCE_API": "https://moa-services.com/agri-service",
     "TELEGRAM_CHANNEL": "-1004442758387",

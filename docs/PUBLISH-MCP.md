@@ -31,12 +31,12 @@
 4. `README.md`-তে যে MCP ইনস্ট্রাকশন লাইন আছে, সেটা যাচাই করুন:
 
    ```
-   opencode mcp add dordekha --url https://dordekha.shouroveh9.workers.dev/mcp
+   opencode mcp add dordekha --url https://dordekha.pages.dev/mcp
    ```
 
    এছাড়া Claude Desktop / Claude Code-এর জন্য:
    ```json
-   { "mcpServers": { "dordekha": { "type": "http", "url": "https://dordekha.shouroveh9.workers.dev/mcp" } } }
+   { "mcpServers": { "dordekha": { "type": "http", "url": "https://dordekha.pages.dev/mcp" } } }
    ```
 
 ---
@@ -83,7 +83,7 @@ workers.dev-এ।
 curl https://registry.modelcontextprotocol.io/v0/servers?search=dordekha
 
 # আমাদের server.json সত্যিই কাজ করে কি না
-curl -X POST https://dordekha.shouroveh9.workers.dev/mcp `
+curl -X POST https://dordekha.pages.dev/mcp `
   -H "Content-Type: application/json" `
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}"
 ```

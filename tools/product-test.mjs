@@ -1,6 +1,6 @@
 // The product test: a shopkeeper's question, asked the way an assistant
 // would ask it, through to a citation that can be opened.
-const base = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const base = process.env.BASE ?? "https://dordekha.pages.dev";
 
 async function mcp(name, args) {
   const r = await fetch(`${base}/mcp`, {

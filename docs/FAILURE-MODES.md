@@ -105,7 +105,7 @@
 ## 🧭 অবস্থা — যেখান থেকে শুরু করবে
 
 ### যা আছে (যাচাই করা)
-- **লাইভ:** https://dordekha.shouroveh9.workers.dev · `/health` → `ok:true`
+- **লাইভ:** https://dordekha.pages.dev · `/health` → `ok:true`
 - **ডেটা:** ৬৪ জেলা · ক্যাটালগে ৪৪৭ পণ্য (তথ্য আছে ২৫৬) · ৩ প্রতিবেদনের দিন (২০২৬-১০-১৭/১৮/১৯) · ১১,৩৬৪ সারি
 - **ইন্টারফেস:** ৯টি REST এন্ডপয়েন্ট · ৪টি MCP টুল · OpenAPI · llms.txt · sitemap index (৩,৯৯৮ উদ্ধৃতিযোগ্য URL) · `/pricing`
 - **যাচাই:** ৬০/৬০ e2e · ৩২/৩২ অডিট-দাবি · ১১০/১১০ ইউনিট · ১২/১২ রেন্ডার
@@ -167,7 +167,7 @@ cd C:\Power of AI\dordekha
 # ১. সব ঠিক আছে কি না দেখো
 npx tsc --noEmit
 npx vitest run
-$env:BASE="https://dordekha.shouroveh9.workers.dev"; node tools/e2e.mjs
+$env:BASE="https://dordekha.pages.dev"; node tools/e2e.mjs
 node tools/verify-audit.mjs
 
 # ২. সাইট সবসময় চলছে কি না (D1 না পড়েও)
@@ -175,14 +175,14 @@ node tools/peek-degraded.mjs
 
 # ৩. স্ন্যাপশট হারিয়ে গেলে — D1 থেকে পুনর্নির্মাণ
 npx wrangler d1 export dordekha --remote --output ..\backup.sql
-node tools/build-snapshot.mjs ..\backup.sql "https://dordekha.shouroveh9.workers.dev" <ADMIN_TOKEN>
+node tools/build-snapshot.mjs ..\backup.sql "https://dordekha.pages.dev" <ADMIN_TOKEN>
 
 # ৪. ডিপ্লয়
 npx wrangler deploy
 
 # ৫. ইতিহাস ফাঁকা? ব্যাকফিল চালু করো
 #    (প্রতি মিনিটে নিজে থেকেই চলে; জোর করতে)
-curl -X POST https://dordekha.shouroveh9.workers.dev/internal/ingest/start -H "X-Admin-Token: <ADMIN_TOKEN>"
+curl -X POST https://dordekha.pages.dev/internal/ingest/start -H "X-Admin-Token: <ADMIN_TOKEN>"
 ```
 
 **ADMIN_TOKEN ও বট টোকেন:** `.dev.vars`-এ (git-ignored)। হারিয়ে গেলে Cloudflare

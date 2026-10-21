@@ -54,7 +54,7 @@
 প্রতিটি সংখ্যার সাথে তারিখ ও উৎস দিয়ে প্রকাশ করে, এবং একটি **MCP server** দিয়ে
 AI সহকারীদের জন্য উন্মুক্ত করে।
 
-• **লাইভ:** https://dordekha.shouroveh9.workers.dev
+• **লাইভ:** https://dordekha.pages.dev
 • **সরকারি উৎস:** https://market.dam.gov.bd/market_daily_price_report
   (আসল ডেটা: https://moa-services.com/agri-service — keyless, কোনো cookie/CSRF নেই)
 • **ফ্রি-টায়ারের কারণ:** ডেটা সরকারি, তাই কেউ সংখ্যার জন্য টাকা দেবে না।
@@ -72,7 +72,7 @@ AI সহকারীদের জন্য উন্মুক্ত করে�
   npx tsc --noEmit                 # টাইপ চেক
   npx vitest run                  # ৭৫টি ইউনিট টেস্ট
   npx wrangler deploy             # ডিপ্লয় (production)
-  $env:BASE="https://dordekha.shouroveh9.workers.dev"; node tools/e2e.mjs   # ৬০টি চেক
+  $env:BASE="https://dordekha.pages.dev"; node tools/e2e.mjs   # ৬০টি চেক
   node tools/verify-audit.mjs      # ৩২টি অডিট-দাবির যাচাই
   node tools/peek.mjs              # ১২টি রেন্ডার-চেক
   node tools/product-test.mjs      # প্রশ্ন → উদ্ধৃতি → সংখ্যা মিলিয়ে দেখা

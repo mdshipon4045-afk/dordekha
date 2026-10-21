@@ -1,20 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.REPLACE_WITH_YOUR_GITHUB_USERNAME/dordekha",
+  "name": "io.github.mdshipon4045-afk/dordekha",
   "title": "দরদেখা — বাংলাদেশের দৈনিক কৃষি বাজারদর",
   "description": "Official daily retail and wholesale market prices for Bangladesh's agricultural commodities, from the Ministry of Agriculture (DAM). Unit-normalised, gap-honest, and dated: every result carries its source date and a citable permalink. Where the source published a mid-range figure rather than a mean, is_midpoint says so. Use get_market_price for a price, compare_districts to compare places, get_price_trend for history, and verify_claim to check a stated price against the official record.",
   "version": "1.0.0",
   "repository": {
-    "url": "https://github.com/REPLACE_WITH_YOUR_GITHUB_USERNAME/dordekha",
+    "url": "https://github.com/mdshipon4045-afk/dordekha",
     "source": "github"
   },
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://dordekha.shouroveh9.workers.dev/mcp"
+      "url": "https://dordekha.pages.dev/mcp"
     }
   ],
-  "websiteUrl": "https://dordekha.shouroveh9.workers.dev",
+  "websiteUrl": "https://dordekha.pages.dev",
   "categories": ["finance", "government-data", "agriculture", "bangladesh"],
   "keywords": [
     "bangladesh",

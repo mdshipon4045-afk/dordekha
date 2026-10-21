@@ -1,0 +1,18 @@
+{
+  // The Pages front for দরদেখা.
+  //
+  // Cloudflare Pages is now part of Workers, so a Pages project is a project
+  // with `pages_build_output_dir` set. The project name decides the
+  // hostname: `dordekha` → `dordekha.pages.dev`, which is on the Public
+  // Suffix List and so is a site in its own right to a search engine.
+  //
+  // It is kept in its own directory so that the Worker in the repository
+  // root — the one that holds D1, KV and the cron — keeps its own
+  // configuration and its own name.
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "dordekha",
+  "pages_build_output_dir": ".",
+  "compatibility_date": "2026-10-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true }
+}

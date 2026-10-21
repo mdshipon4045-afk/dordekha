@@ -65,7 +65,7 @@ Machine-Readable Interface।
    সেখানে ফাঁকা রাখি। আমরা কোনো সংখ্যা অনুমান বা ইন্টারপোলেট করি না।
 
 ৩. **স্বচ্ছতা।** আমাদের পদ্ধতি, তথ্যের পরিধি ও প্রতিটি সংশোধনের কারণ আমাদের
-   ওয়েবসাইটে প্রকাশ্য (https://dordekha.shouroveh9.workers.dev/methodology)।
+   ওয়েবসাইটে প্রকাশ্য (https://dordekha.pages.dev/methodology)।
 
 ৪. **আয়ের রূপ।** আমরা বিনা টাকায় উন্মুক্ত সাধারণ-জনসম্পদ পাতা ও একটি
    বিনা টাকায় ব্যবহারযোগ্য API রাখব। বাণিজ্যিকভাবে আয় হবে শুধু উন্নত
@@ -105,10 +105,10 @@ Machine-Readable Interface।
   বাজারদর রিপোর্টের তথ্য — ৬৪ জেলা, খুচরা ও পাইকারি — নিয়ে তৈরি একটি বাংলা
   ভাষার ওয়েবসাইট ও একটি মেশিন-পড়যোগ্য API।
 
-ওয়েবসাইট: https://dordekha.shouroveh9.workers.dev
-পদ্ধতি ও তথ্যের পরিধি: https://dordekha.shouroveh9.workers.dev/methodology
-ডেটাসেট:            https://dordekha.shouroveh9.workers.dev/dataset
-লাইসেন্স শর্ত:      https://dordekha.shouroveh9.workers.dev/licence
+ওয়েবসাইট: https://dordekha.pages.dev
+পদ্ধতি ও তথ্যের পরিধি: https://dordekha.pages.dev/methodology
+ডেটাসেট:            https://dordekha.pages.dev/dataset
+লাইসেন্স শর্ত:      https://dordekha.pages.dev/licence
 মেশিন-পড়যোগ্য:
   REST API — /api/v1/...   (উদাহরণ: /api/v1/latest?district=47)
   MCP server — POST /mcp   (AI সহকারীর জন্য)

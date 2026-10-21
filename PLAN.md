@@ -69,7 +69,7 @@ The hero is a thesis, not a pitch: a live lookup where a person types
 - [x] Cloudflare account + OAuth login
 - [x] D1 database `dordekha` (`b8c959ee-…`) + migration 0001 (schema) and 0002 (ingest job state)
 - [x] KV namespace `CACHE` (`0c856163da…`)
-- [x] Worker deployed → **https://dordekha.shouroveh9.workers.dev**
+- [x] Worker deployed → **https://dordekha.pages.dev**
 - [x] Cron trigger `* * * * *` — the per-minute heartbeat that drives the ingest
 - [x] Secrets: `TELEGRAM_BOT_TOKEN`, `ADMIN_TOKEN` (local copy in `.dev.vars`, git-ignored)
 - [x] `SITE_ORIGIN` set to the real origin (the workers.dev hostname, not a pages.dev one)

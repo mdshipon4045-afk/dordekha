@@ -11,7 +11,7 @@
 
 import { readFileSync } from "node:fs";
 
-const BASE = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const BASE = process.env.BASE ?? "https://dordekha.pages.dev";
 const ENDPOINT = "https://api.indexnow.org/indexnow";
 
 function key() {

@@ -1,6 +1,6 @@
 // Verify each audit finding against the live site, from the outside.
 //   node tools/verify-audit.mjs
-const B = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const B = process.env.BASE ?? "https://dordekha.pages.dev";
 const cp = (n) => String.fromCodePoint(n);
 const norm = (s) => String(s).split(cp(0x09af) + cp(0x09bc)).join(cp(0x09df));
 // The site writes numbers in Bangla digits, so the harness has to read them

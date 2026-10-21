@@ -1,5 +1,5 @@
 // A quick look at what the live site is actually serving.
-const B = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const B = process.env.BASE ?? "https://dordekha.pages.dev";
 
 // Bengali can be spelled two ways; the feed and this file may differ.
 const cp = (n) => String.fromCodePoint(n);

@@ -88,7 +88,7 @@ GET /api/v1/units                        (ইউনিট কোডের লে
 ## MCP
 
 ```bash
-opencode mcp add dordekha --url https://dordekha.shouroveh9.workers.dev/mcp
+opencode mcp add dordekha --url https://dordekha.pages.dev/mcp
 ```
 
 ```json
@@ -137,7 +137,7 @@ Registry-তে প্রকাশের নির্দেশনা: [`docs/PUB
 
 ```bash
 npx vitest run                                    # 75 unit tests
-$env:BASE="https://dordekha.shouroveh9.workers.dev"; node tools/e2e.mjs   # 60 live checks
+$env:BASE="https://dordekha.pages.dev"; node tools/e2e.mjs   # 60 live checks
 node tools/verify-audit.mjs                       # 32 audit claims
 node tools/peek.mjs                               # 12 render checks
 node tools/product-test.mjs                       # question → citation → same number

@@ -1,6 +1,6 @@
 // Call the MCP server and print what it says, so a matching failure can be
 // seen with the exact bytes that were sent.
-const base = process.env.BASE ?? "https://dordekha.shouroveh9.workers.dev";
+const base = process.env.BASE ?? "https://dordekha.pages.dev";
 
 async function call(name, args) {
   const r = await fetch(`${base}/mcp`, {
