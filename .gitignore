@@ -15,3 +15,4 @@ docs/audit-report-utf8.txt
 .superpowers/
 .secrets.env
 mcp-publisher.exe
+.private/
