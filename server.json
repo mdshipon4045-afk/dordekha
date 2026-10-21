@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.mdshipon4045-afk/dordekha",
-  "title": "দরদেখা — বাংলাদেশের দৈনিক কৃষি বাজারদর",
-  "description": "Official daily retail and wholesale market prices for Bangladesh's agricultural commodities, from the Ministry of Agriculture (DAM). Unit-normalised, gap-honest, and dated: every result carries its source date and a citable permalink. Where the source published a mid-range figure rather than a mean, is_midpoint says so. Use get_market_price for a price, compare_districts to compare places, get_price_trend for history, and verify_claim to check a stated price against the official record.",
+  "title": "দরদেখা — বাংলাদেশের বাজারদর",
+  "description": "Official daily Bangladesh agricultural market prices — unit-normalised, dated, citable.",
   "version": "1.0.0",
   "repository": {
     "url": "https://github.com/mdshipon4045-afk/dordekha",

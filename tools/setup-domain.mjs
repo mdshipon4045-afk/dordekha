@@ -20,7 +20,20 @@ const WORKER = "dordekha";
 const ACCOUNT = "87013ff9a4f44a15adab832cc34f0c68";
 
 const domain = process.argv[2];
-const token = process.argv[3];
+const token = process.argv[3] ?? readToken();
+
+/** The token can also come from `.secrets.env`, which is git-ignored. */
+function readToken() {
+  try {
+    const raw = readFileSync(".secrets.env", "utf8");
+    const m = raw.match(/^CLOUDFLARE_API_TOKEN=(.*)$/m);
+    if (m) return m[1].trim();
+  } catch {
+    /* no secrets file */
+  }
+  console.error("no Cloudflare API token: pass it as the second argument");
+  process.exit(2);
+}
 
 if (!domain || !token) {
   console.error("usage: node tools/setup-domain.mjs <domain> <CLOUDFLARE_API_TOKEN>");
@@ -62,6 +75,25 @@ if (found.length > 0) {
 const nameservers = zone.name_servers ?? [];
 console.log("   nameservers:");
 for (const ns of nameservers) console.log(`     ${ns}`);
+
+/* 1b. A zone that is still "pending" cannot serve yet: the registry has not
+   delegated to Cloudflare. The nameservers above have to be put into the
+   registry's panel first, and the zone becomes active some minutes later.
+   Stopping here is not a failure — it is the one thing only the owner can do,
+   because it needs their session in the registry's own panel. */
+
+const isActive = zone.status === "active";
+if (!isActive) {
+  console.log(`\n=== the zone is "${zone.status}" ===`);
+  console.log("The registry has not delegated to Cloudflare yet. Do this now:");
+  console.log(`  1. open the registry panel and put these two nameservers in for ${domain}:`);
+  for (const ns of nameservers) console.log(`       ${ns}`);
+  console.log("  2. wait a few minutes, then run this script again");
+  console.log("\nEverything after the delegation is done by this script:");
+  console.log("  the Worker gets the custom domain, SITE_ORIGIN moves, the site is");
+  console.log("  deployed and checked, and the MX record for email is added.");
+  process.exit(0);
+}
 
 /* 2. The registry application. --------------------------------------- */
 
