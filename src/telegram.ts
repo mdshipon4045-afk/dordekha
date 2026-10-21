@@ -21,6 +21,14 @@ import { toBanglaDigits } from "./normalize";
 
 export interface TelegramConfig {
   token: string;
+  /**
+   * The channel to post to. Either a numeric chat id (e.g. "-1004442758387")
+   * or a public username (e.g. "@dordekha_bazar").
+   *
+   * The numeric id is preferred: a channel's username can be changed or
+   * mistyped, and a wrong username fails with the unhelpful "chat not
+   * found". The id is stable for the life of the channel.
+   */
   channel: string;
 }
 
@@ -64,16 +72,49 @@ async function tg(config: TelegramConfig, method: string, body: unknown): Promis
   }
 }
 
-/** Verify the token and that the bot can reach the channel. */
-export async function checkTelegram(config: TelegramConfig): Promise<{ bot: string; channel: string; ok: boolean; error?: string }> {
+/** Verify the token, that the bot can reach the channel, and its rights. */
+export async function checkTelegram(config: TelegramConfig): Promise<{
+  bot: string;
+  channel: string;
+  ok: boolean;
+  error?: string;
+  rights?: { status: string; canPost: boolean };
+}> {
   const me = await tg(config, "getMe", {});
   const chat = await tg(config, "getChat", { chat_id: config.channel });
+
+  const meBody = await tgRaw(config, "getMe", {});
+  const botName = meBody?.username ?? "bot";
+
+  if (!me.ok) return { bot: botName, channel: config.channel, ok: false, error: me.description };
+  if (!chat.ok) return { bot: botName, channel: config.channel, ok: false, error: chat.description };
+
+  const member = await tgRaw(config, "getChatMember", { chat_id: config.channel, user_id: meBody?.id });
+  const status = member?.status ?? "unknown";
+  const canPost = member?.can_post_messages === true;
+
   return {
-    bot: "dordekha_bazar_bot",
+    bot: botName,
     channel: config.channel,
-    ok: me.ok && chat.ok,
-    error: !me.ok ? me.description : !chat.ok ? chat.description : undefined,
+    ok: status === "administrator" || status === "creator",
+    error: status === "administrator" || status === "creator" ? undefined : `bot status is "${status}"`,
+    rights: { status, canPost },
   };
+}
+
+/** Raw Telegram call, returning the parsed result or null. */
+async function tgRaw(config: TelegramConfig, method: string, body: unknown): Promise<any> {
+  try {
+    const res = await fetch(`${TELEGRAM_API}/bot${config.token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as { ok?: boolean; result?: unknown };
+    return json.ok ? json.result : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Send a message to the channel. */
