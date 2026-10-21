@@ -100,6 +100,33 @@ The hero is a thesis, not a pitch: a live lookup where a person types
 - [ ] **G-0.5b Licence** — DAM/ডিসিম written data licence or defensible derivative position
 - [ ] **G-0.5c Buyer** — ≥1 customer pays
 
+## Integrity review (Oct 2026) — findings and fixes
+An assistant audited the live site against the government source. Every claim was
+checked against the database first; these were true and are now fixed.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A requested date was stamped onto a **different day's** figures | Date looked up in the history; a date we do not hold gets an explicit "no figure" page listing the dates we do hold. Regression guard in the e2e suite. |
+| 2 | Wholesale was labelled **"per quintal"** while the number was per kilogram | The value is divided to the retail unit, so the retail unit is the label; the upstream's unit is kept separately for audit (migration 0003) |
+| 3 | The movers board published **data-entry errors as market news** (a 97% fall) | Rows the upstream flagged, and moves over 100%, are excluded |
+| 4 | The national aggregate was stored as **district 0** and rendered as "0" — it was the largest "district" in the database | Named "জাতীয়" and excluded from every district query |
+| 5 | llms.txt claimed **16 months** while 3 days were held | The claim is computed from the database and states what is actually held |
+| 6 | "আজকের" was a promise the data could not keep (the source reports T-1) | The date and the source's one-day lag are stated under the headline |
+| 7 | `source.url` pointed at an **API endpoint**, not the government report | Points at the DAM report page, with the API alongside it |
+| 8 | `/health` **leaked the internal pipeline state** publicly | Public health returns only what a monitor needs; detail moved behind the admin path |
+
+### The constraint the review exposed
+D1's free tier allows **100,000 rows written per day**. A 16-month backfill is
+~700,000 rows, and the old ingest was spending the whole budget rewriting the
+snapshot table on every call (423,533 rows over 119 calls). The ingest now
+collects only the report days it is missing, refreshes the snapshot for the
+districts it wrote, and stops itself at 80,000 rows a day rather than locking
+the database out until midnight UTC.
+
+**Consequence:** the history grows by roughly 20 report days a day, and the
+site's claim about it is computed, never asserted. The full upstream archive is
+reachable but is not yet held here.
+
 ## Kill switch
 If 6 months pass with <3 paying customers ⇒ wind down cleanly, export data, keep the open dataset.
 
