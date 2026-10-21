@@ -99,6 +99,12 @@ opencode mcp add dordekha --url https://dordekha.pages.dev/mcp
 
 টুল: `get_market_price` · `compare_districts` · `get_price_trend` · `verify_claim`
 
+**MCP Registry-তে প্রকাশিত** — `io.github.mdshipon4045-afk/dordekha` (v1.0.0, status active):
+```json
+{"mcpServers":{"dordekha":{"type":"http","url":"https://dordekha.pages.dev/mcp"}}}
+```
+সার্চ: `https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.mdshipon4045-afk/dordekha`
+
 Registry-তে প্রকাশের নির্দেশনা: [`docs/PUBLISH-MCP.md`](docs/PUBLISH-MCP.md)
 
 ---
