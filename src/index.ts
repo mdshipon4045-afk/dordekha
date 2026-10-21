@@ -21,10 +21,12 @@ import {
   ledgerRows,
   movers,
   priceForDateOrSnapshot,
+  resolveFact,
   unitNames,
 } from "./db";
 import {
   getAggregates,
+  getSnapshot,
   refreshAggregates,
   setAggregates,
   setHistorySnapshot,
@@ -34,7 +36,7 @@ import {
 } from "./cache";
 import { formatBdt } from "./normalize";
 import { extractKeywords, foldForCompare } from "./bn";
-import { candidatesFor, pickByCoverage } from "./resolve";
+import { candidatesFor, pickByCoverage, resolve } from "./resolve";
 import { refreshMaster, startIngest, stepIngest, buildDigestInput, cronTick } from "./ingest";
 import {
   esc,
@@ -52,10 +54,6 @@ import {
   type RenderContext,
 } from "./render";
 import {
-  renderApiHtml,
-  renderDatasetHtml,
-  renderLicenceHtml,
-  renderMethodologyHtml,
   renderNotFoundHtml,
   renderNoDataHtml,
   renderPriceIndexHtml,
@@ -63,6 +61,18 @@ import {
   type PriceIndexItem,
 } from "./pages";
 import { commoditySlug, districtSlug } from "./slug";
+import { allUnits } from "./units";
+import {
+  apiDoc,
+  datasetDoc,
+  licenceDoc,
+  methodologyDoc,
+  renderDocHtml,
+  renderDocJson,
+  renderDocMarkdown,
+  type DatasetStats,
+  type Doc,
+} from "./docs";
 import type { Env } from "./types";
 
 const MD = "text/markdown; charset=utf-8";
@@ -299,6 +309,11 @@ export default {
       if (path === "/robots.txt") return robotsTxt(env);
       if (path === "/llms.txt") return llmsTxt(env);
       if (path === "/sitemap.xml") return sitemap(env, latest);
+      if (path.startsWith("/sitemap-")) {
+        const part = await sitemapPart(env, path.slice("/sitemap-".length), latest);
+        return part ?? json({ error: "Not Found" }, ctxR, 404);
+      }
+      if (path === "/openapi.json") return openApi(env, ctxR);
 
       // ── API ────────────────────────────────────────────────────────────
       if (path.startsWith("/api/")) return apiRoutes(env, ctxR, url);
@@ -306,11 +321,11 @@ export default {
       // ── Pages ──────────────────────────────────────────────────────────
       if (path === "/") return homePage(env, ctxR, fmt, aggregates);
       if (path === "/price") return priceIndex(env, ctxR, fmt);
-      if (path === "/dataset") return datasetPage(env, ctxR);
-      if (path === "/methodology") return methodologyPage(env, ctxR);
-      if (path === "/licence") return licencePage(env, ctxR);
-      if (path === "/api") return apiDocPage(env, ctxR);
-      if (path === "/verify") return verifyPage(env, ctxR, request, url);
+      if (path === "/dataset") return datasetPage(env, ctxR, fmt);
+      if (path === "/methodology") return methodologyPage(env, ctxR, fmt);
+      if (path === "/licence") return licencePage(env, ctxR, fmt);
+      if (path === "/api") return apiDocPage(env, ctxR, fmt);
+      if (path === "/verify") return verifyPage(env, ctxR, request, url, fmt);
 
       const priceMatch = /^\/price\/([^/]+)(?:\/([^/]+))?(?:\/(\d{4}-\d{2}-\d{2}))?$/.exec(path);
       if (priceMatch) {
@@ -318,17 +333,28 @@ export default {
       }
 
       const districtMatch = /^\/district\/([^/]+)$/.exec(path);
-      if (districtMatch) return districtPage(env, ctxR, request, districtMatch[1]!);
+      if (districtMatch) return districtPage(env, ctxR, request, districtMatch[1]!, fmt);
 
-      return notFound(env, ctxR);
+      return notFound(env, ctxR, fmt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // The detail is logged, not published. The audit found the raw D1
+      // error in the response body — the free-tier quota, the vendor's
+      // internal message, the plan name. An assistant reads that and
+      // concludes the service is finished, rather than that it is busy.
       console.error("request failed", url.pathname, message, err instanceof Error ? err.stack : "");
       const fallback = ctxFor(env, null);
       return json(
-        { error: "Service temporarily unavailable", message, path: url.pathname },
+        {
+          error: "Service temporarily unavailable",
+          status: "degraded",
+          message:
+            "এই মুহূর্তে তথ্য দেওয়া যাচ্ছে না। সাময়িক সমস্যা হলে কিছুক্ষণ পরে আবার চেষ্টা করুন।",
+          retry_after_seconds: 60,
+          path: url.pathname,
+        },
         fallback,
-        500,
+        503,
       );
     }
   },
@@ -357,7 +383,16 @@ async function homePage(
   env: Env,
   ctx: RenderContext,
   fmt: Format,
-  aggregates: { busiestDistrictId: number; busiestDistrictName: string; commodityCount: number; districtCount: number; rowCount: number; days: number; carriedPct: number | null },
+  aggregates: {
+    busiestDistrictId: number;
+    busiestDistrictName: string;
+    commodityCount: number;
+    commoditiesWithData: number;
+    districtCount: number;
+    rowCount: number;
+    days: number;
+    carriedPct: number | null;
+  },
 ): Promise<Response> {
   const [district, stats, carried, moveRows] = await Promise.all([
     Promise.resolve({ id: aggregates.busiestDistrictId, nameBn: aggregates.busiestDistrictName }),
@@ -401,6 +436,7 @@ async function homePage(
     })),
     carriedPct: carried,
     commodityCount: stats.commodities,
+    commoditiesWithData: aggregates.commoditiesWithData,
     districtCount: stats.districts,
     rowCount: stats.rows,
     dayCount: stats.days,
@@ -453,7 +489,7 @@ async function pricePage(
     slug: commoditySlug(c.nameBn, c.nameEn, c.id),
   }));
   const commodity = commodities.find((c) => c.slug === commoditySlugParam);
-  if (!commodity) return notFound(env, ctx);
+  if (!commodity) return notFound(env, ctx, fmt);
 
 
 
@@ -519,7 +555,7 @@ async function pricePage(
   }
 
   const district = districts.find((d) => d.slug === districtSlugParam);
-  if (!district) return notFound(env, ctx);
+  if (!district) return notFound(env, ctx, fmt);
 
   // A requested date is looked up in the history. It is never inferred from
   // the latest snapshot: a page for 1 August must not carry 17 October's
@@ -549,7 +585,7 @@ async function pricePage(
         404,
       );
     }
-    return notFound(env, ctx);
+    return notFound(env, ctx, fmt);
   }
 
   const unitMap = await unitNames(env);
@@ -566,6 +602,7 @@ async function pricePage(
       avg: row.retail?.avg ?? null,
       unitBn: unitMap.get(row.retail?.unit ?? 0) ?? "কেজি",
       unitEn: unitMap.get(row.retail?.unit ?? 0) ?? "kg",
+      isMidpoint: row.retail?.isMidpoint ?? false,
     },
     wholesale: row.wholesale
       ? {
@@ -576,6 +613,7 @@ async function pricePage(
           // the retail unit is the only honest label for it.
           unitBn: unitMap.get(row.wholesale.unit ?? row.retail?.unit ?? 0) ?? "কেজি",
           unitEn: unitMap.get(row.wholesale.unit ?? row.retail?.unit ?? 0) ?? "kg",
+          isMidpoint: row.wholesale.isMidpoint,
         }
       : null,
     url: factUrl(ctx.origin, commodity.slug, district.slug, row.priceDate),
@@ -588,7 +626,13 @@ async function pricePage(
   return html(renderPriceFactHtml(fact, ctx), ctx);
 }
 
-async function districtPage(env: Env, ctx: RenderContext, request: Request, slug: string): Promise<Response> {
+async function districtPage(
+  env: Env,
+  ctx: RenderContext,
+  request: Request,
+  slug: string,
+  fmt: Format,
+): Promise<Response> {
   const districts = (await districtRefs(env)).map((d) => ({
     id: d.id,
     bn: d.nameBn,
@@ -596,7 +640,7 @@ async function districtPage(env: Env, ctx: RenderContext, request: Request, slug
     slug: districtSlug(d.nameBn, d.nameEn, d.id),
   }));
   const district = districts.find((d) => d.slug === slug);
-  if (!district) return notFound(env, ctx);
+  if (!district) return notFound(env, ctx, fmt);
 
   const rows = await latestForDistrictOrSnapshot(env, district.id, 1000);
   const commodityById = new Map<number, { bn: string; slug: string }>();
@@ -679,26 +723,137 @@ const SOURCE = {
   api: "https://moa-services.com/agri-service",
 } as const;
 
+/**
+ * Resolve a district from an id or a name.
+ *
+ * Accepting only an id is a trap for an assistant that has just read the
+ * name off a web page: `district=ঢাকা` becomes NaN and the endpoint
+ * answers with an empty result, which reads as "Dhaka has no prices".
+ */
+async function resolveDistrictParam(
+  env: Env,
+  raw: string,
+): Promise<{ id: number; name: string; nameEn: string } | null> {
+  const list = await districtRefs(env);
+  const asNumber = Number(raw);
+  if (Number.isInteger(asNumber) && asNumber > 0) {
+    const hit = list.find((d) => d.id === asNumber);
+    return hit ? { id: hit.id, name: hit.nameBn, nameEn: hit.nameEn } : null;
+  }
+  const hit = resolve(list, raw).match;
+  return hit ? { id: hit.id, name: hit.nameBn, nameEn: hit.nameEn } : null;
+}
+
+/** The English name of a unit id, for the unit legend. */
+function unitNameEn(id: number): string {
+  return allUnits().find((u) => u.id === id)?.en ?? "kg";
+}
+
 async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Response> {
   const path = url.pathname.replace(/\/$/, "") || "/api";
 
   if (path === "/api/v1/latest") {
-    const districtId = Number(url.searchParams.get("district") ?? 47);
-    const rows = await latestForDistrictOrSnapshot(env, districtId, 1000);
+    // The district is required. The audit found that omitting it silently
+    // returned Dhaka — the largest market in the country — so an assistant
+    // that forgot the parameter would confidently quote the wrong district.
+    const raw = url.searchParams.get("district");
+    if (!raw) {
+      return json(
+        {
+          error: "district is required",
+          hint: "Use the district id (e.g. 47) or its name (e.g. ঢাকা, Dhaka).",
+          districts: `${ctx.origin}/api/v1/districts`,
+        },
+        ctx,
+        400,
+      );
+    }
+    const district = await resolveDistrictParam(env, raw);
+    if (!district) {
+      return json(
+        {
+          error: `Unknown district "${raw}"`,
+          hint: "Use the district id (e.g. 47) or its name (e.g. ঢাকা, Dhaka).",
+          districts: `${ctx.origin}/api/v1/districts`,
+        },
+        ctx,
+        400,
+      );
+    }
+    const rows = await latestForDistrictOrSnapshot(env, district.id, 1000);
+    const unitMap = await unitNames(env);
+    const commodities = await commodityRefs(env);
+    const nameOf = new Map(commodities.map((c) => [c.id, c.nameBn]));
+    const slugOf = new Map(
+      commodities.map((c) => [c.id, commoditySlug(c.nameBn, c.nameEn, c.id)]),
+    );
+    const districtSlugValue = districtSlug(district.name, district.nameEn, district.id);
+    const commodityById = new Map(commodities.map((c) => [c.id, c]));
+
     return json(
       {
-        district_id: districtId,
+        district_id: district.id,
+        district: district.name,
         date: ctx.latestDate,
         count: rows.length,
-        prices: rows.map((r) => ({
-          commodity_id: r.commodityId,
-          retail: r.retail,
-          wholesale: r.wholesale,
-          carried_forward: r.carriedForward,
-          anomaly: r.anomaly,
-        })),
+        prices: rows.map((r) => {
+          const c = commodityById.get(r.commodityId);
+          const unit = unitMap.get(r.retail?.unit ?? 0) ?? "কেজি";
+          return {
+            commodity_id: r.commodityId,
+            commodity: c ? { name_bn: c.nameBn, name_en: c.nameEn } : null,
+            retail: r.retail
+              ? {
+                  min: r.retail.min,
+                  max: r.retail.max,
+                  avg: r.retail.avg,
+                  unit: r.retail.unit,
+                  unit_bn: unit,
+                  is_midpoint: r.retail.isMidpoint,
+                }
+              : null,
+            wholesale: r.wholesale
+              ? {
+                  min: r.wholesale.min,
+                  max: r.wholesale.max,
+                  avg: r.wholesale.avg,
+                  unit: r.wholesale.unit,
+                  unit_bn: unit,
+                  is_midpoint: r.wholesale.isMidpoint,
+                  divisor: r.wholesale.divisor,
+                  divisor_source: r.wholesale.divisorSource,
+                }
+              : null,
+            price_date: r.priceDate,
+            carried_forward: r.carriedForward,
+            anomaly: r.anomaly,
+            // The permalink that shows this exact figure.
+            url: c
+              ? factUrl(ctx.origin, slugOf.get(r.commodityId)!, districtSlugValue, r.priceDate)
+              : null,
+          };
+        }),
         source: SOURCE,
         licence: `${ctx.origin}/licence`,
+      },
+      ctx,
+    );
+  }
+
+  if (path === "/api/v1/units") {
+    // The unit legend. The audit found that the REST API handed out bare
+    // numbers — `unit: 2` — with nothing anywhere saying what 2 meant, so
+    // a consumer had to guess "kg" and could be wrong.
+    const list = await unitNames(env);
+    const rows = [...list.entries()]
+      .map(([id, nameBn]) => ({ id, name_bn: nameBn, name_en: unitNameEn(id) }))
+      .sort((a, b) => a.id - b.id);
+    return json(
+      {
+        count: rows.length,
+        note: "unit is the id of the unit the retail price is expressed in. Wholesale prices are divided down to the same unit.",
+        units: rows,
+        source: SOURCE,
       },
       ctx,
     );
@@ -764,9 +919,17 @@ async function apiRoutes(env: Env, ctx: RenderContext, url: URL): Promise<Respon
   }
 
   if (path === "/api/v1/price") {
+    // The date parameter is honoured. The audit found that a request for a
+    // specific date silently returned the latest one, so an assistant
+    // asking about Tuesday was handed Monday's price with a Monday label.
+    const date = url.searchParams.get("date");
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return json({ error: `date must be YYYY-MM-DD, got "${date}"` }, ctx, 400);
+    }
     const found = await searchFact(env, ctx, url.searchParams.get("q") ?? "", {
       commodity: url.searchParams.get("commodity") ?? "",
       district: url.searchParams.get("district") ?? "",
+      date,
     });
     return json(found, ctx, found.error ? 404 : 200);
   }
@@ -830,23 +993,38 @@ async function searchFact(
   env: Env,
   ctx: RenderContext,
   q: string,
-  explicit?: { commodity: string; district: string },
+  explicit?: { commodity: string; district: string; date?: string | null },
 ): Promise<Record<string, unknown>> {
   const commodityList = await commodityRefs(env);
   const districtList = await districtRefs(env);
 
   // ── Work out what the user is asking about ──────────────────────────────
   const keywords = extractKeywords(q);
-  const commodityCandidates = explicit?.commodity
-    ? candidatesFor(commodityList, [explicit.commodity])
-    : candidatesFor(commodityList, keywords);
-  const districtCandidates = explicit?.district
-    ? candidatesFor(districtList, [explicit.district])
-    : candidatesFor(districtList, keywords);
+  const queryWords = questionWords(keywords);
+
+  // An explicit id is answered with that exact item. An assistant that
+  // read "commodity=833" off a previous answer should not be told "no
+  // commodity matched 833".
+  const explicitCommodityId = explicit?.commodity ? Number(explicit.commodity) : NaN;
+  const explicitDistrictId = explicit?.district ? Number(explicit.district) : NaN;
+
+  const commodityCandidates =
+    Number.isInteger(explicitCommodityId) && explicitCommodityId > 0
+      ? commodityList.filter((c) => c.id === explicitCommodityId)
+      : explicit?.commodity
+        ? candidatesFor(commodityList, [explicit.commodity])
+        : candidatesFor(commodityList, keywords);
+  const districtCandidates =
+    Number.isInteger(explicitDistrictId) && explicitDistrictId > 0
+      ? districtList.filter((d) => d.id === explicitDistrictId)
+      : explicit?.district
+        ? candidatesFor(districtList, [explicit.district])
+        : candidatesFor(districtList, keywords);
 
   if (commodityCandidates.length === 0) {
     return {
-      error: `No commodity matched "${explicit?.commodity || q}". Try the Bangla or English name, e.g. পেঁয়াজ বা potato.`,
+      error: `No commodity matched "${explicit?.commodity || q}". Try the Bangla or English name (e.g. পেঁয়াজ / potato) or the commodity id.`,
+      hint: `${ctx.origin}/api/v1/commodities`,
     };
   }
 
@@ -860,15 +1038,28 @@ async function searchFact(
   //  2. among the ones that are reported, the one reported in the most
   //     districts wins, so "চাল" means rice rather than "চালকুমড়া".
   const districtRows = district ? await latestForDistrictOrSnapshot(env, district.id, 1000) : [];
+  const rowByCommodity = new Map(districtRows.map((r) => [r.commodityId, r]));
+  // A commodity that has no price in this district can never be the right
+  // answer, however well its name matches.
+  const withPrice = commodityCandidates.filter(
+    (c) => rowByCommodity.get(c.id)?.retail?.avg != null,
+  );
   const present = new Set(districtRows.map((r) => r.commodityId));
   const viable = district
-    ? commodityCandidates.filter((c) => present.has(c.id))
+    ? withPrice.length
+      ? withPrice
+      : commodityCandidates.filter((c) => present.has(c.id))
     : commodityCandidates;
   const globalCoverage = await commodityCoverageOrSnapshot(
     env,
     commodityCandidates.map((c) => c.id),
   );
   const ranked = [...viable].sort((a, b) => {
+    // A candidate that names everything the question names is the one that
+    // was meant: "সয়াবিন তেল" is the oil, not the seed.
+    const aCovers = coversAllWords(a.nameBn, queryWords);
+    const bCovers = coversAllWords(b.nameBn, queryWords);
+    if (aCovers !== bCovers) return aCovers ? -1 : 1;
     // A name that *starts* with the keyword is the one the user meant:
     // "চাল" is "চাল - আমন - সরু", not "চিনিগুড়া চাল".
     const aStarts = startsWithKeyword(a.nameBn, keywords);
@@ -889,12 +1080,18 @@ async function searchFact(
   };
   const commodity = picked.match;
   const cSlug = commoditySlug(commodity.nameBn, commodity.nameEn, commodity.id);
+  const unitMap = await unitNames(env);
 
   if (district) {
-    const row = districtRows.find((r) => r.commodityId === commodity.id);
+    // One function decides the date and reads the row for it, so the API
+    // and the HTML page can never disagree about what "now" means.
+    const row = await resolveFact(env, commodity.id, district.id, explicit?.date ?? null);
     if (!row || !row.retail) {
       return {
-        error: `No published price for ${commodity.nameBn} in ${district.nameBn} on ${ctx.latestDate ?? "the latest report date"}.`,
+        error: explicit?.date
+          ? `No published price for ${commodity.nameBn} in ${district.nameBn} on ${explicit.date}. The source has no figure for that district and day.`
+          : `No published price for ${commodity.nameBn} in ${district.nameBn} on ${ctx.latestDate ?? "the latest report date"}.`,
+        ...(explicit?.date ? { available_dates_hint: `${ctx.origin}/price/${cSlug}/${districtSlug(district.nameBn, district.nameEn, district.id)}` } : {}),
       };
     }
     const dSlug = districtSlug(district.nameBn, district.nameEn, district.id);
@@ -902,8 +1099,13 @@ async function searchFact(
       commodity: { name_bn: commodity.nameBn, name_en: commodity.nameEn },
       district: { name_bn: district.nameBn, name_en: district.nameEn },
       price_date: row.priceDate,
-      retail: row.retail,
-      wholesale: row.wholesale,
+      retail: {
+        ...row.retail,
+        unit_bn: unitMap.get(row.retail.unit ?? 0) ?? "কেজি",
+      },
+      wholesale: row.wholesale
+        ? { ...row.wholesale, unit_bn: unitMap.get(row.wholesale.unit ?? 0) ?? "কেজি" }
+        : null,
       prices: { retail: row.retail, wholesale: row.wholesale },
       carried_forward: row.carriedForward,
       anomaly: row.anomaly,
@@ -931,25 +1133,34 @@ async function searchFact(
   const low = quantile(avgs, 0.1);
   const high = quantile(avgs, 0.9);
   const outliers = avgs.filter((v) => v > median * 3 || (median > 0 && v < median / 3)).length;
-  const avg = avgs.reduce((s, v) => s + v, 0) / avgs.length;
+  const mean = avgs.reduce((s, v) => s + v, 0) / avgs.length;
   const cheapest = withRetail.find((x) => x.avg === avgs[0])!;
   const dearest = withRetail.find((x) => x.avg === avgs[avgs.length - 1])!;
   const unit = withRetail[0]?.r.retail?.unit ?? null;
-  const unitMap = await unitNames(env);
+  // The date the figures are from — the rows' own date, not the day the
+  // request happened to arrive.
+  const nationalDate = withRetail
+    .map((x) => x.r.priceDate)
+    .sort()
+    .pop() ?? ctx.latestDate;
 
   return {
     commodity: { name_bn: commodity.nameBn, name_en: commodity.nameEn },
     district: { name_bn: "জেলা-গড়", name_en: "national average" },
-    price_date: ctx.latestDate,
+    price_date: nationalDate,
     scope: "national",
     retail: {
       min: Math.round(low * 100) / 100,
       max: Math.round(high * 100) / 100,
+      // The median across the districts that reported. This one really is
+      // a median, not the source's mid-range estimate.
       avg: Math.round(median * 100) / 100,
+      median: Math.round(median * 100) / 100,
       unit: unit ?? 2,
       unit_bn: unitMap.get(unit ?? 2) ?? "কেজি",
+      is_midpoint: false,
     },
-    mean: Math.round(avg * 100) / 100,
+    mean: Math.round(mean * 100) / 100,
     outliers_excluded: outliers,
     wholesale: null,
     prices: { retail: null, wholesale: null },
@@ -973,6 +1184,24 @@ function startsWithKeyword(name: string, keywords: string[]): boolean {
     const key = foldForCompare(k);
     return key.length >= 2 && n.startsWith(key);
   });
+}
+
+/** The distinct words of the question that could name a product. */
+function questionWords(keywords: string[]): string[] {
+  const out = new Set<string>();
+  for (const k of keywords) {
+    for (const w of foldForCompare(k).split(/[^\p{L}\p{N}\p{M}]+/u)) {
+      if (w.length > 1) out.add(w);
+    }
+  }
+  return [...out];
+}
+
+/** Does the name contain every word of the question? */
+function coversAllWords(name: string, words: string[]): boolean {
+  if (words.length < 2) return false;
+  const own = foldForCompare(name).split(/[^\p{L}\p{N}\p{M}]+/u);
+  return words.every((w) => own.includes(w));
 }
 
 // ── Static documents ────────────────────────────────────────────────────────
@@ -1063,7 +1292,10 @@ async function llmsTxt(env: Env): Promise<Response> {
 
 ## What this is
 A daily, machine-readable feed of the Ministry of Agriculture (কৃষি বিপণন অধিদপ্তর, DAM) market price reports:
-64 districts, 505 upazilas, 447 commodities, retail and wholesale.
+${agg.districtCount} districts, ${agg.commodityCount} commodities in the catalogue, retail and wholesale.
+${agg.commoditiesWithData} of the ${agg.commodityCount} catalogued commodities have published prices.
+${agg.districtsWithData} of the ${agg.districtCount} districts submitted figures on ${agg.latestDate ?? "the latest day"}.
+Upazila-level data: ${agg.upazilaCount > 0 ? `${agg.upazilaCount} upazilas` : "not yet available"}.
 
 **History currently held: ${coverage}.**
 The upstream archive reaches further back, but this service publishes only what it has
@@ -1071,35 +1303,49 @@ actually collected and normalised. Ask for a date it does not hold and it will s
 rather than substitute a different day.
 
 **Units.** Retail prices are in the commodity's own unit (usually 1 kg, sometimes 4 pieces
-or 1 piece). Wholesale prices are divided down to the *same* retail unit, so the two are
-directly comparable. The upstream's own unit and the divisor applied are recorded on every
-row.
+or 1 piece) — the \`unit\` field carries the unit id, and \`/api/v1/units\` gives the legend.
+Wholesale prices are divided down to the *same* retail unit, so the two are directly
+comparable. The upstream's own unit and the divisor applied are recorded on every row
+(\`divisor\`, \`divisor_source\`); the factor is never a hard-coded constant.
+
+**What "avg" is.** The source's third figure is, in 99% of rows, exactly (min + max) / 2 —
+a mid-range estimate, not a mean over the markets that reported. Rows therefore carry
+\`is_midpoint: true\`, and the range (min–max) is the figure to quote. Where the source's
+figure fell outside its own range, the row is clamped, flagged in \`anomaly\`, and the
+source's original value is kept in \`source_avg\`.
 
 **Honesty rules.** Where the source has no figure for a place and day, there is no figure
 here. Where the upstream repeated the previous day's number, the row is stamped
 "পূর্বের" (carried forward). Where a value could not be reconciled, the row is stamped
 "সতর্কতা" and the raw divisor is published alongside.
 
+**Citing.** Cite the permalink, not the government form: the DAM report page is a
+search form, not a permalink, and a reader cannot find the number there. Every result
+carries a \`url\` of the form \`${base}/price/<commodity>/<district>/<date>\` where the
+figure is on the page. Always give the data date. Do not write "today" — give the date.
+
 ## Key pages
 - [Dataset and scope](${base}/dataset): what is covered, what is not, and how the numbers are derived.
 - [Methodology](${base}/methodology): the unit normalisation and gap handling rules.
 - [Licence](${base}/licence): how the data may be used.
 - [API reference](${base}/api): REST endpoints and the MCP server.
+- [OpenAPI spec](${base}/openapi.json): the machine-readable contract.
 
 ## Machine interfaces
 - MCP server (Streamable HTTP, stateless): \`POST ${base}/mcp\`
   Methods: \`server/discover\`, \`tools/list\`, \`tools/call\`
   Tools: \`get_market_price\`, \`compare_districts\`, \`get_price_trend\`, \`verify_claim\`
-- REST: \`GET ${base}/api/v1/latest?district=<id>\`, \`GET ${base}/api/v1/price?commodity=<name>&district=<name>\`
+- REST: \`GET ${base}/api/v1/latest?district=47\`, \`GET ${base}/api/v1/price?commodity=<name>&district=<name>\`
 - Free-text search: \`GET ${base}/api/v1/search?q=পেঁয়াজ ঢাকা\`
 - Answer endpoint (built for assistants, one object with a ready citation): \`GET ${base}/api/v1/answer?q=পেঁয়াজ ঢাকা\`
 - CSV series: \`GET ${base}/api/v1/series.csv?commodity=<id>&district=<id>\`
+- Unit legend: \`GET ${base}/api/v1/units\`
 - Every page has a \`.md\` and a \`.json\` variant. Content negotiation via \`Accept: text/markdown\` works too.
 - Verify a claim: \`GET ${base}/verify?claim=পেঁয়াজ ৬০ টাকা ঢাকায়\`
 
 ## Source
 কৃষি মন্ত্রণালয় / কৃষি বিপণন অধিদপ্তর (DAM) — the daily online market price report.
-Public report page: https://market.dam.gov.bd/market_daily_price_report
+Public report form: https://market.dam.gov.bd/market_daily_price_report
 
 ## Attribution
 Please cite as: দরদেখা (${base}), data: কৃষি মন্ত্রণালয় / DAM daily price report.
@@ -1110,9 +1356,20 @@ Always give the data date. Do not write "today" — give the date.
   });
 }
 
+/**
+ * The sitemap.
+ *
+ * The product's whole proposition is a citable, date-specific URL. The audit
+ * found 518 URLs in the sitemap and not one of them carried a date — so
+ * every per-fact page was invisible to a crawler, and the 48,500 URLs the
+ * service can actually produce were advertised nowhere.
+ *
+ * The fact URLs live in their own sitemaps, split so that no single file
+ * gets unwieldy, and the index points at them.
+ */
 async function sitemap(env: Env, latest: string | null): Promise<Response> {
   const base = env.SITE_ORIGIN.replace(/\/$/, "");
-  const urls: string[] = [
+  const staticUrls: string[] = [
     `${base}/`,
     `${base}/price`,
     `${base}/dataset`,
@@ -1122,58 +1379,297 @@ async function sitemap(env: Env, latest: string | null): Promise<Response> {
     `${base}/verify`,
   ];
 
-  for (const c of await commodityRefs(env)) {
-    urls.push(`${base}/price/${commoditySlug(c.nameBn, c.nameEn, c.id)}`);
+  const commodities = await commodityRefs(env);
+  const districts = await districtRefs(env);
+  const commoditySlugById = new Map(
+    commodities.map((c) => [c.id, commoditySlug(c.nameBn, c.nameEn, c.id)]),
+  );
+  const districtSlugById = new Map(
+    districts.map((d) => [d.id, districtSlug(d.nameBn, d.nameEn, d.id)]),
+  );
+
+  // Only the districts that actually have figures are listed. A sitemap full
+  // of empty pages teaches a crawler that this site is full of dead ends.
+  const snapshot = await getSnapshot(env);
+  const districtsWithData = new Set<number>();
+  const factUrls: string[] = [];
+  for (const r of snapshot?.rows ?? []) {
+    districtsWithData.add(r.d);
+    const cs = commoditySlugById.get(r.c);
+    const ds = districtSlugById.get(r.d);
+    if (cs && ds) factUrls.push(`${base}/price/${cs}/${ds}/${r.t}`);
   }
-  for (const d of await districtRefs(env)) {
-    urls.push(`${base}/district/${districtSlug(d.nameBn, d.nameEn, d.id)}`);
+
+  const commodityUrls = commodities.map((c) => `${base}/price/${commoditySlug(c.nameBn, c.nameEn, c.id)}`);
+  const districtUrls = [...districtsWithData]
+    .map((d) => districtSlugById.get(d))
+    .filter((s): s is string => Boolean(s))
+    .map((s) => `${base}/district/${s}`);
+
+  const CHUNK = 5000;
+  const chunks: string[] = [];
+  for (let i = 0; i < factUrls.length; i += CHUNK) {
+    chunks.push(`${base}/sitemap-facts-${Math.floor(i / CHUNK) + 1}.xml`);
+  }
+
+  const index = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>${esc(`${base}/sitemap-pages.xml`)}</loc>${latest ? `<lastmod>${latest}</lastmod>` : ""}</sitemap>
+  <sitemap><loc>${esc(`${base}/sitemap-commodities.xml`)}</loc>${latest ? `<lastmod>${latest}</lastmod>` : ""}</sitemap>
+  <sitemap><loc>${esc(`${base}/sitemap-districts.xml`)}</loc>${latest ? `<lastmod>${latest}</lastmod>` : ""}</sitemap>
+  ${chunks.map((c) => `<sitemap><loc>${esc(c)}</loc>${latest ? `<lastmod>${latest}</lastmod>` : ""}</sitemap>`).join("\n  ")}
+</sitemapindex>`;
+
+  return new Response(index, {
+    headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}
+
+/** One part of the sitemap: the pages, the commodities, the districts, or the facts. */
+async function sitemapPart(
+  env: Env,
+  part: string,
+  latest: string | null,
+): Promise<Response | null> {
+  const base = env.SITE_ORIGIN.replace(/\/$/, "");
+  // The part name arrives as "facts-1.xml"; the number has to be read
+  // without the suffix, or the slice is NaN and the file is empty.
+  const name = part.replace(/\.xml$/, "");
+  const commodities = await commodityRefs(env);
+  const districts = await districtRefs(env);
+  const commoditySlugById = new Map(
+    commodities.map((c) => [c.id, commoditySlug(c.nameBn, c.nameEn, c.id)]),
+  );
+  const districtSlugById = new Map(
+    districts.map((d) => [d.id, districtSlug(d.nameBn, d.nameEn, d.id)]),
+  );
+
+  let urls: string[] = [];
+  let lastmod: string | null = null;
+
+  if (part === "pages") {
+    urls = [
+      `${base}/`,
+      `${base}/price`,
+      `${base}/dataset`,
+      `${base}/methodology`,
+      `${base}/licence`,
+      `${base}/api`,
+      `${base}/verify`,
+    ];
+    lastmod = latest;
+  } else if (name === "commodities") {
+    urls = commodities.map((c) => `${base}/price/${commoditySlug(c.nameBn, c.nameEn, c.id)}`);
+    lastmod = latest;
+  } else if (name === "districts") {
+    const snapshot = await getSnapshot(env);
+    const withData = new Set((snapshot?.rows ?? []).map((r) => r.d));
+    urls = [...withData]
+      .map((d) => districtSlugById.get(d))
+      .filter((s): s is string => Boolean(s))
+      .map((s) => `${base}/district/${s}`);
+    lastmod = latest;
+  } else if (name.startsWith("facts-")) {
+    const n = Number(name.slice("facts-".length));
+    const snapshot = await getSnapshot(env);
+    const CHUNK = 5000;
+    const all: string[] = [];
+    for (const r of snapshot?.rows ?? []) {
+      const cs = commoditySlugById.get(r.c);
+      const ds = districtSlugById.get(r.d);
+      if (cs && ds) all.push(`${base}/price/${cs}/${ds}/${r.t}`);
+    }
+    urls = all.slice((n - 1) * CHUNK, n * CHUNK);
+    lastmod = latest;
+  } else {
+    return null;
   }
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((u) => `  <url><loc>${esc(u)}</loc>${latest ? `<lastmod>${latest}</lastmod>` : ""}</url>`).join("\n")}
+${urls.map((u) => `  <url><loc>${esc(u)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}</url>`).join("\n")}
 </urlset>`;
   return new Response(xml, {
     headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=3600" },
   });
 }
 
+/**
+ * An OpenAPI description of the REST endpoints.
+ *
+ * The audit found that an assistant checking the API had no machine-
+ * readable contract to read — it had to guess the parameter names. A
+ * spec costs one cached response and saves every consumer a guess.
+ */
+function openApi(env: Env, ctx: RenderContext): Response {
+  const base = env.SITE_ORIGIN.replace(/\/$/, "");
+  const spec = {
+    openapi: "3.1.0",
+    info: {
+      title: "দরদেখা — বাংলাদেশের দৈনিক কৃষি বাজারদর",
+      version: "1.0.0",
+      description:
+        "Official daily retail and wholesale market prices for Bangladesh's agricultural commodities, unit-normalised and gap-honest. Every figure carries its source date and a citable URL. Where the source published a mid-range figure rather than a mean, `is_midpoint` is true.",
+      license: { name: "দরদেখা লাইসেন্স", url: `${base}/licence` },
+    },
+    servers: [{ url: base, description: "দরদেখা" }],
+    tags: [
+      { name: "prices", description: "দৈনিক বাজারদর" },
+      { name: "reference", description: "পণ্য, জেলা ও এককের তালিকা" },
+    ],
+    paths: {
+      "/api/v1/latest": {
+        get: {
+          tags: ["prices"],
+          summary: "একটি জেলার সব পণ্যের সর্বশেষ দর",
+          parameters: [
+            {
+              name: "district",
+              in: "query",
+              required: true,
+              description: "জেলার আইডি (যেমন 47) বা নাম (যেমন ঢাকা, Dhaka)",
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "সর্বশেষ প্রতিবেদনের সারি",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+            "400": { description: "জেলা দেওয়া হয়নি বা অজানা" },
+          },
+        },
+      },
+      "/api/v1/price": {
+        get: {
+          tags: ["prices"],
+          summary: "একটি পণ্যের নির্দিষ্ট জেলা ও তারিখের দর",
+          parameters: [
+            { name: "commodity", in: "query", schema: { type: "string" }, description: "পণ্যের নাম" },
+            { name: "district", in: "query", schema: { type: "string" }, description: "জেলার নাম" },
+            {
+              name: "date",
+              in: "query",
+              schema: { type: "string", format: "date" },
+              description: "YYYY-MM-DD। না দিলে সর্বশেষ প্রতিবেদনের তারিখ।",
+            },
+          ],
+          responses: {
+            "200": { description: "একটি তথ্য" },
+            "404": { description: "এই তারিখে উৎসে তথ্য নেই" },
+          },
+        },
+      },
+      "/api/v1/search": {
+        get: {
+          tags: ["prices"],
+          summary: "ফ্রি-টেক্সটে খুঁজে একটি তথ্য",
+          parameters: [{ name: "q", in: "query", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "একটি তথ্য" }, "404": { description: "কিছু মেলেনি" } },
+        },
+      },
+      "/api/v1/answer": {
+        get: {
+          tags: ["prices"],
+          summary: "উত্তর + উদ্ধৃতি — অ্যাসিস্ট্যান্টের জন্য",
+          parameters: [{ name: "q", in: "query", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "উত্তর, তারিখ, উৎস ও উদ্ধৃতি" } },
+        },
+      },
+      "/api/v1/series.csv": {
+        get: {
+          tags: ["prices"],
+          summary: "একটি পণ্যের দৈনিক ইতিহাস (CSV)",
+          parameters: [
+            { name: "commodity", in: "query", required: true, schema: { type: "integer" } },
+            { name: "district", in: "query", required: true, schema: { type: "integer" } },
+            { name: "since", in: "query", schema: { type: "string", format: "date" } },
+          ],
+          responses: { "200": { description: "CSV", content: { "text/csv": {} } } },
+        },
+      },
+      "/api/v1/districts": {
+        get: { tags: ["reference"], summary: "জেলার তালিকা", responses: { "200": { description: "জেলা" } } },
+      },
+      "/api/v1/commodities": {
+        get: { tags: ["reference"], summary: "পণ্যের তালিকা", responses: { "200": { description: "পণ্য" } } },
+      },
+      "/api/v1/units": {
+        get: {
+          tags: ["reference"],
+          summary: "একক কোডের সংজ্ঞা",
+          responses: { "200": { description: "unit কোড ও তার নাম" } },
+        },
+      },
+    },
+  };
+  return json(spec, ctx);
+}
+
 // ── Content documents ───────────────────────────────────────────────────────
 
-async function datasetPage(env: Env, ctx: RenderContext): Promise<Response> {
+/**
+ * The numbers the content pages state.
+ *
+ * Every one of them is counted from the data at request time. The audit
+ * found the dataset page claiming "505 upazilas" against a table with none,
+ * a JSON-LD block promising sixteen months of history against three days
+ * of data, and two different carry-forward rates on two different pages.
+ * A number that is written into the copy is a number that goes stale and
+ * gets repeated back.
+ */
+async function datasetStats(env: Env): Promise<DatasetStats> {
   const agg = await getAggregates(env);
-  let upazilas = 0;
-  try {
-    const u = await env.DB.prepare(`SELECT COUNT(*) AS c FROM upazila`).first<{ c: number }>();
-    upazilas = u?.c ?? 0;
-  } catch {
-    /* the count is a nicety, not worth failing the page over */
+  const unitMap = await unitNames(env);
+  const units = [...unitMap.entries()]
+    .map(([id, nameBn]) => ({ id, nameBn, nameEn: unitNameEn(id) }))
+    .sort((a, b) => a.id - b.id);
+
+  let upazilas = agg.upazilaCount;
+  if (!upazilas) {
+    try {
+      const u = await env.DB.prepare(`SELECT COUNT(*) AS c FROM upazila`).first<{ c: number }>();
+      upazilas = u?.c ?? 0;
+    } catch {
+      upazilas = 0;
+    }
   }
-  return html(
-    renderDatasetHtml(
-      {
-        commodities: agg.commodityCount,
-        districts: agg.districtCount,
-        upazilas,
-        days: agg.days,
-        rows: agg.rowCount,
-      },
-      ctx,
-    ),
-    ctx,
-  );
+
+  return {
+    commodities: agg.commodityCount,
+    commoditiesWithData: agg.commoditiesWithData,
+    districts: agg.districtCount,
+    districtsWithData: agg.districtsWithData,
+    upazilas,
+    days: agg.days,
+    rows: agg.rowCount,
+    carriedPct: agg.carriedPct,
+    firstDate: agg.firstDate,
+    latestDate: agg.latestDate,
+    units: units.map((u) => ({ id: u.id, name_bn: u.nameBn, name_en: u.nameEn })),
+  };
 }
 
-async function methodologyPage(env: Env, ctx: RenderContext): Promise<Response> {
-  return html(renderMethodologyHtml(ctx), ctx);
+function docResponse(doc: Doc, ctx: RenderContext, fmt: Format): Response {
+  if (fmt === "json") return json(renderDocJson(doc, ctx), ctx);
+  if (fmt === "markdown") return md(renderDocMarkdown(doc, ctx), ctx);
+  return html(renderDocHtml(doc, ctx), ctx);
 }
 
-async function licencePage(env: Env, ctx: RenderContext): Promise<Response> {
-  return html(renderLicenceHtml(ctx), ctx);
+async function datasetPage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  return docResponse(datasetDoc(await datasetStats(env), ctx), ctx, fmt);
 }
 
-async function apiDocPage(env: Env, ctx: RenderContext): Promise<Response> {
-  return html(renderApiHtml(ctx), ctx);
+async function methodologyPage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  return docResponse(methodologyDoc(await datasetStats(env), ctx), ctx, fmt);
+}
+
+async function licencePage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  return docResponse(licenceDoc(ctx), ctx, fmt);
+}
+
+async function apiDocPage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  return docResponse(apiDoc(ctx), ctx, fmt);
 }
 
 async function verifyPage(
@@ -1181,9 +1677,19 @@ async function verifyPage(
   ctx: RenderContext,
   request: Request,
   url: URL,
+  fmt: Format,
 ): Promise<Response> {
   const claim = url.searchParams.get("claim") ?? "";
   if (!claim) {
+    if (fmt === "json") {
+      return json(
+        { page: "/verify", claim: null, verdict: null, hint: "Pass ?claim=… to verify a claim." },
+        ctx,
+      );
+    }
+    if (fmt === "markdown") {
+      return md(`# দাবি যাচাই করুন\n\nযাচাই করতে \`?claim=\` প্যারামিটার দিন।\n`, ctx);
+    }
     return html(renderVerifyHtml("", { ok: false, text: "", url: null, actual: null }, ctx), ctx);
   }
 
@@ -1195,11 +1701,32 @@ async function verifyPage(
     params: { name: "verify_claim", arguments: { claim } },
   });
   const payload = (await res.json()) as {
-    result?: { content?: { text?: string }[]; structuredContent?: Record<string, unknown> };
+    result?: {
+      content?: { text?: string }[];
+      structuredContent?: Record<string, unknown>;
+    };
   };
   const text = payload.result?.content?.[0]?.text ?? "";
   const verdictUrl = (payload.result?.structuredContent?.url as string) ?? null;
   const verdict = text.includes("মিলেছে");
+
+  if (fmt === "json") {
+    return json(
+      {
+        page: "/verify",
+        claim,
+        verdict: text.split("\n")[1] ?? null,
+        verified: verdict,
+        detail: text,
+        url: verdictUrl,
+        source: SOURCE,
+      },
+      ctx,
+    );
+  }
+  if (fmt === "markdown") {
+    return md(`# যাচাই: ${claim}\n\n${text}\n`, ctx);
+  }
 
   return html(
     renderVerifyHtml(claim, { ok: verdict, text, url: verdictUrl, actual: null }, ctx),
@@ -1207,6 +1734,12 @@ async function verifyPage(
   );
 }
 
-async function notFound(env: Env, ctx: RenderContext): Promise<Response> {
+async function notFound(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  if (fmt === "json") {
+    return json({ error: "Not Found", hint: "see /api" }, ctx, 404);
+  }
+  if (fmt === "markdown") {
+    return md(`# ৪০৪ — পাতা পাওয়া যায়নি\n\nহোমে ফিরুন: ${ctx.origin}/\n`, ctx, 404);
+  }
   return html(renderNotFoundHtml(ctx), ctx, 404);
 }

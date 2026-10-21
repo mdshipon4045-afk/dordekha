@@ -26,12 +26,14 @@ import {
   historyForOrSnapshot,
   latestForCommodityOrSnapshot,
   latestForDistrictOrSnapshot,
+  resolveFact,
   unitNames,
 } from "./db";
 import { getAggregates } from "./cache";
 import { formatBdt } from "./normalize";
 import { matchScore, foldForCompare, bnIncludes, toAsciiDigits } from "./bn";
-import { resolve, findInText, rankByCoverage, type Resolution, type Resolvable } from "./resolve";
+import type { PriceRowOut } from "./db";
+import { resolve, findAllInText, findInText, rankByCoverage, type Resolution, type Resolvable } from "./resolve";
 import { commoditySlug, districtSlug } from "./slug";
 import { factUrl, priceSentence, type PriceFact, type RenderContext } from "./render";
 import type { Env } from "./types";
@@ -205,8 +207,8 @@ export async function handleMcp(env: Env, ctx: RenderContext, req: JsonRpcReques
           },
         },
         instructions:
-          "Official Bangladesh agricultural market prices, unit-normalised and gap-honest. Always cite the `url` returned with a result. Retail prices are per the commodity's own unit (usually 1 kg); wholesale prices have been divided so they are directly comparable with retail.",
-        ttlMs: 3600_000,
+          "Official Bangladesh agricultural market prices, unit-normalised and gap-honest. Always cite the `url` returned with a result. Retail prices are per the commodity's own unit (usually 1 kg); wholesale prices have been divided so they are directly comparable with retail. The source publishes a mid-range figure, not a mean over markets — treat `retail.min`–`retail.max` as the range and `retail.avg` as the source's own mid-range estimate.",
+        ttlMs: 600_000,
         cacheScope: "public",
       });
 
@@ -220,7 +222,7 @@ export async function handleMcp(env: Env, ctx: RenderContext, req: JsonRpcReques
           inputSchema: t.inputSchema,
           annotations: t.annotations,
         })),
-        ttlMs: 3600_000,
+        ttlMs: 600_000,
         cacheScope: "public",
       });
 
@@ -330,12 +332,17 @@ async function getMarketPrice(
 ): Promise<{ resultType: string; content: { type: string; text: string }[]; structuredContent: unknown }> {
   const commodity = cRes.match!;
   const district = dRes.match!;
-  const rows = await latestForDistrictOrSnapshot(env, district.id, 1000);
-  const row = rows.find((r) => r.commodityId === commodity.id);
+
+  // The date is decided in one place, and the row for that date is read.
+  // Reading the "latest" table on one path and the history on another is
+  // what let the tool answer with a two-day-old price while the page showed
+  // the current one.
+  const row = await resolveFact(env, commodity.id, district.id, date);
   if (!row || !row.retail) {
     const latest = (await getAggregates(env)).latestDate;
+    const when = date ? date : `সর্বশেষ প্রতিবেদনের তারিখ (${latest ?? "অজানা"})`;
     throw new Error(
-      `No published price for ${commodity.nameBn} in ${district.nameBn} on the latest report date (${latest ?? "unknown"}). The district may not have submitted figures for that day.`,
+      `No published price for ${commodity.nameBn} in ${district.nameBn} on ${when}. The district may not have submitted figures for that day.`,
     );
   }
 
@@ -354,6 +361,7 @@ async function getMarketPrice(
       avg: row.retail.avg,
       unitBn: retailUnit.bn,
       unitEn: retailUnit.en,
+      isMidpoint: row.retail.isMidpoint,
     },
     wholesale: row.wholesale
       ? {
@@ -362,6 +370,7 @@ async function getMarketPrice(
           avg: row.wholesale.avg,
           unitBn: wholesaleUnit.bn,
           unitEn: wholesaleUnit.en,
+          isMidpoint: row.wholesale.isMidpoint,
         }
       : null,
     url: factUrl(ctx.origin, commodity.slug, district.slug, row.priceDate),
@@ -395,11 +404,14 @@ async function getMarketPrice(
       commodity: { bn: commodity.nameBn, en: commodity.nameEn },
       district: { bn: district.nameBn, en: district.nameEn },
       price_date: row.priceDate,
-      retail: fact.retail,
-      wholesale: fact.wholesale,
+      retail: { ...fact.retail, unit_id: row.retail.unit, is_midpoint: row.retail.isMidpoint },
+      wholesale: row.wholesale
+        ? { ...fact.wholesale, unit_id: row.wholesale.unit, is_midpoint: row.wholesale.isMidpoint }
+        : null,
       carried_forward: row.carriedForward,
       anomaly: row.anomaly,
       source: ctx.sourceName,
+      citation: `সূত্র: দরদেখা (${fact.url}), তথ্যের তারিখ: ${row.priceDate}, উৎস: কৃষি মন্ত্রণালয় / DAM।`,
       ambiguous: cRes.ambiguous || dRes.ambiguous,
       alternatives: { commodities: altCommodities, districts: altDistricts },
     },
@@ -413,36 +425,45 @@ async function compareDistricts(
   priceType: "retail" | "wholesale",
 ): Promise<{ resultType: string; content: { type: string; text: string }[]; structuredContent: unknown }> {
   const commodity = cRes.match!;
-  const rows = await latestForCommodityOrSnapshot(env, commodity.id, 200);
-  const withValue = rows
+  const all = await latestForCommodityOrSnapshot(env, commodity.id, 200);
+  const withValue = all
     .map((r) => ({ row: r, value: priceType === "retail" ? r.retail?.avg : r.wholesale?.avg }))
-    .filter((x): x is { row: (typeof rows)[number]; value: number } => typeof x.value === "number");
+    .filter((x): x is { row: (typeof all)[number]; value: number } => typeof x.value === "number");
 
   if (withValue.length === 0) {
     throw new Error(
-      `No ${priceType} prices are available for ${commodity.nameBn} yet. The latest report covers ${rows.length} commodities; this one has no published figure.`,
+      `No ${priceType} prices are available for ${commodity.nameBn} yet. The latest report covers ${all.length} commodities; this one has no published figure.`,
     );
   }
 
-  const sorted = [...withValue].sort((a, b) => a.value - b.value);
+  // A comparison is only meaningful between figures from the same day, and
+  // the day has to be stated — otherwise "পেঁয়াজ সবচেয়ে সস্তা ঢাকায়" is a
+  // claim about a date the reader never saw.
+  const latestDate = withValue.reduce((m, x) => (x.row.priceDate > m ? x.row.priceDate : m), "");
+  const sameDay = withValue.filter((x) => x.row.priceDate === latestDate);
+
+  const sorted = [...sameDay].sort((a, b) => a.value - b.value);
   const cheapest = sorted[0]!;
   const dearest = sorted[sorted.length - 1]!;
-  const avg = withValue.reduce((s, x) => s + x.value, 0) / withValue.length;
+  const avg = sameDay.reduce((s, x) => s + x.value, 0) / sameDay.length;
 
-  const nameOf = async (districtId: number): Promise<string> => {
-    const drefs = await districtRefs(env);
-    return drefs.find((d) => d.id === districtId)?.nameBn ?? String(districtId);
-  };
+  const drefs = await districtRefs(env);
+  const nameOf = (districtId: number): string =>
+    drefs.find((d) => d.id === districtId)?.nameBn ?? String(districtId);
 
-  const cheapestName = await nameOf(cheapest.row.districtId);
-  const dearestName = await nameOf(dearest.row.districtId);
+  const cheapestName = nameOf(cheapest.row.districtId);
+  const dearestName = nameOf(dearest.row.districtId);
   const url = `${ctx.origin.replace(/\/$/, "")}/price/${commodity.slug}`;
 
-  const districtNames = await Promise.all(sorted.map((x) => nameOf(x.row.districtId)));
+  const districtNames = sorted.map((x) => nameOf(x.row.districtId));
   const table = sorted.map((x, i) => `${districtNames[i]}: ${formatBdt(x.value)}`).join("\n");
+
+  const total = drefs.filter((d) => d.id > 0).length;
+  const reported = sameDay.length;
 
   const text = [
     `${commodity.nameBn} — ${priceType === "retail" ? "খুচরা" : "পাইকারি"} দরের জেলাভিত্তিক তুলনা`,
+    `তারিখ: ${latestDate} — ${total}টি জেলার মধ্যে ${reported}টি জেলা এই তারিখে জমা দিয়েছে`,
     `সবচেয়ে কম: ${cheapestName} (${formatBdt(cheapest.value)})`,
     `সবচেয়ে বেশি: ${dearestName} (${formatBdt(dearest.value)})`,
     `জেলা-গড়: ${formatBdt(avg)}`,
@@ -457,11 +478,19 @@ async function compareDistricts(
       title: `${commodity.nameBn} — জেলাভিত্তিক দরের তুলনা`,
       url,
       text,
+      price_date: latestDate,
       price_type: priceType,
+      districts_reporting: reported,
+      districts_total: total,
       cheapest: { district_id: cheapest.row.districtId, district: cheapestName, value: cheapest.value },
       dearest: { district_id: dearest.row.districtId, district: dearestName, value: dearest.value },
-      district_average: avg,
-      districts: withValue.map((x) => ({ district_id: x.row.districtId, value: x.value })),
+      district_average: Math.round(avg * 100) / 100,
+      districts: sameDay.map((x) => ({
+        district_id: x.row.districtId,
+        district: nameOf(x.row.districtId),
+        value: x.value,
+        price_date: x.row.priceDate,
+      })),
       source: ctx.sourceName,
     },
   };
@@ -532,37 +561,74 @@ async function verifyClaim(
   const lower = foldForCompare(claim);
 
   // Pull a number out of the claim. Bangla digits are converted first, so
-  // "৬০ টাকা" is read as 60.
-  const numberMatch = toAsciiDigits(lower).match(/(\d+(?:\.\d+)?)/);
-  const claimedValue = numberMatch ? Number(numberMatch[1]) : null;
+  // "৬০ টাকা" is read as 60. A number that sits next to a price word wins
+  // over an earlier number, so "২০২৬ সালে পেঁয়াজ ৬০ টাকা" reads 60, not
+  // 2026.
+  const ascii = toAsciiDigits(lower);
+  const priceish = ascii.match(/(\d+(?:\.\d+)?)\s*(?:টাকা|taka|tk|৳|\/\s*(?:kg|কেজি|কেজিও))/i);
+  const yearish = ascii.match(/\b(19\d\d|20\d\d)\b/);
+  const plain = ascii.match(/(\d+(?:\.\d+)?)/);
+  const claimedValue = priceish
+    ? Number(priceish[1])
+    : plain && (!yearish || plain.index === yearish.index)
+      ? Number(plain[1])
+      : null;
 
-  // The commodity and district are found *inside* the sentence, not matched
-  // against it as a whole — "পেঁয়াজ ৬০ টাকা ঢাকায়" contains "পেঁয়াজ".
-  const commodityHit = findInText(commodities, claim);
-  const commodity = commodityHit.match;
+  // The commodity and the district are found *inside* the sentence, and
+  // every candidate is kept: a claim that says "পেঁয়াজ" does not say which
+  // variety, and the answer must not depend on a silent tie-break.
+  const commodityHits = findAllInText(commodities, claim, 8);
+  const districtHits = findAllInText(districts, claim, 3);
+  const district = districtHits.match;
 
-  const districtHit = findInText(districts, claim);
-  const district = districtHit.match;
-
-  if (!commodity) {
+  if (!commodityHits.match) {
     throw new Error(
       "Could not identify the commodity in the claim. Mention the commodity in Bangla (e.g. পেঁয়াজ) or English (potato).",
     );
   }
 
-  const rows = await latestForCommodityOrSnapshot(env, commodity.id, 200);
-  const candidates = district ? rows.filter((r) => r.districtId === district.id) : rows;
+  const candidates = commodityHits.all.length ? commodityHits.all : [commodityHits.match!];
 
-  if (candidates.length === 0 || !candidates[0]?.retail) {
-    throw new Error(`No published retail price for ${commodity.nameBn} yet.`);
+  // Each candidate is looked up in the same district, on the same day.
+  const checked: { commodity: CommodityRef; row: PriceRowOut | null }[] = [];
+  for (const c of candidates) {
+    const row = district
+      ? await resolveFact(env, c.id, district.id, null)
+      : await resolveFact(env, c.id, 47, null);
+    if (row?.retail) checked.push({ commodity: c, row });
   }
 
-  const row = candidates[0]!;
+  if (checked.length === 0) {
+    throw new Error(
+      `No published retail price for ${commodityHits.match.nameBn}${district ? ` in ${district.nameBn}` : ""} yet.`,
+    );
+  }
+
+  // The verdict: the claim matches if the stated figure falls inside the
+  // range of any candidate. Which candidate it matches is stated by name,
+  // and the others are listed with their ranges — a claim about "পেঁয়াজ"
+  // can be true for the local onion and false for the imported one.
+  const inRange = (row: PriceRowOut): boolean => {
+    const r = row.retail!;
+    if (claimedValue === null) return false;
+    if (r.min !== null && r.max !== null && r.min <= r.max) {
+      return claimedValue >= r.min && claimedValue <= r.max;
+    }
+    if (r.avg !== null) return Math.abs(claimedValue - r.avg) <= Math.max(1, r.avg * 0.1);
+    return false;
+  };
+
+  const matched = checked.find((c) => inRange(c.row!));
+  const primary = matched ?? checked[0]!;
+  const row = primary.row!;
   const actual = row.retail!.avg;
   const actualMin = row.retail!.min;
   const actualMax = row.retail!.max;
   const where = district ? district.nameBn : "জেলা-গড়";
-  const range = actualMin !== null && actualMax !== null ? actualMin <= claimedValue! && claimedValue! <= actualMax : null;
+  const range =
+    actualMin !== null && actualMax !== null && claimedValue !== null
+      ? actualMin <= claimedValue && claimedValue <= actualMax
+      : null;
 
   const matches =
     claimedValue === null
@@ -573,38 +639,64 @@ async function verifyClaim(
           ? claimedValue >= actualMin * 0.9 && claimedValue <= actualMax * 1.1
           : false;
 
+  const otherVarieties = checked
+    .filter((c) => c.commodity.id !== primary.commodity.id)
+    .map(
+      (c) =>
+        `${c.commodity.nameBn}: ${formatBdt(c.row!.retail!.min)}–${formatBdt(c.row!.retail!.max)} টাকা`,
+    );
+
   const verdict =
     matches === null
       ? "যাচাই করা যায়নি (দাবিতে সংখ্যা পাওয়া যায়নি)"
-      : matches
-        ? "মিলেছে ✅"
+      : matched
+        ? `মিলেছে ✅ — ${matched.commodity.nameBn}`
         : `মিলেনি ❌ — প্রকৃত দর ${formatBdt(actualMin)}–${formatBdt(actualMax)} টাকা`;
 
-  const slug = district ? district.slug : "";
   const url = district
-    ? factUrl(ctx.origin, commodity.slug, district.slug, row.priceDate)
-    : `${ctx.origin.replace(/\/$/, "")}/price/${commodity.slug}`;
+    ? factUrl(ctx.origin, primary.commodity.slug, district.slug, row.priceDate)
+    : `${ctx.origin.replace(/\/$/, "")}/price/${primary.commodity.slug}`;
 
   const text = [
     `দাবি: "${claim}"`,
     `যাচাই: ${verdict}`,
-    `${commodity.nameBn} (${where}), ${row.priceDate}: খুচরা ${formatBdt(actualMin)}–${formatBdt(actualMax)} টাকা (গড় ${formatBdt(actual)})`,
+    `${primary.commodity.nameBn} (${where}), ${row.priceDate}: খুচরা ${formatBdt(actualMin)}–${formatBdt(actualMax)} টাকা (উৎসের প্রকাশিত মধ্যম-পরিমাণ ${formatBdt(actual)})`,
+    otherVarieties.length
+      ? `একই নামের অন্যান্য পণ্য (${row.priceDate}): ${otherVarieties.join("; ")}`
+      : "",
     `তথ্যসূত্র: ${ctx.sourceName}`,
     url,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return {
     resultType: "complete",
     content: [{ type: "text", text }],
     structuredContent: {
-      title: `যাচাই: ${commodity.nameBn} — ${where}`,
+      title: `যাচাই: ${primary.commodity.nameBn} — ${where}`,
       url,
       text,
       verdict,
       matches,
       claimed_value: claimedValue,
       actual: { min: actualMin, max: actualMax, avg: actual },
+      commodity: { bn: primary.commodity.nameBn, en: primary.commodity.nameEn },
+      district: district
+        ? { bn: district.nameBn, en: district.nameEn }
+        : { bn: "জেলা-গড়", en: "national average" },
       date: row.priceDate,
+      price_date: row.priceDate,
+      variants: checked.map((c) => ({
+        commodity: { bn: c.commodity.nameBn, en: c.commodity.nameEn },
+        min: c.row!.retail!.min,
+        max: c.row!.retail!.max,
+        avg: c.row!.retail!.avg,
+        matches: inRange(c.row!),
+        url: district
+          ? factUrl(ctx.origin, c.commodity.slug, district.slug, c.row!.priceDate)
+          : `${ctx.origin.replace(/\/$/, "")}/price/${c.commodity.slug}`,
+      })),
       source: ctx.sourceName,
     },
   };

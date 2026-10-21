@@ -104,7 +104,32 @@ async function post(path, body, headers = {}) {
 }
 {
   const r = await get("/sitemap.xml");
-  check("sitemap serves", r.status === 200 && r.text.includes("<urlset"), `status=${r.status}`);
+  // The sitemap is an index now: the per-fact URLs live in their own files,
+  // because there are thousands of them.
+  const indexOk = r.status === 200 && r.text.includes("<sitemapindex");
+  const parts = (r.text.match(/<loc>([^<]+)<\/loc>/g) ?? []).map((s) => s.replace(/<\/?loc>/g, ""));
+  const facts = parts.filter((p) => /sitemap-facts-/.test(p));
+  let factUrls = 0;
+  for (const p of facts) {
+    const part = await get(new URL(p).pathname);
+    factUrls += (part.text.match(/<loc>/g) ?? []).length;
+  }
+  check(
+    "sitemap serves",
+    indexOk && parts.length > 0,
+    `status=${r.status} parts=${parts.length}`,
+  );
+  check(
+    "sitemap lists the per-fact pages",
+    factUrls > 0,
+    `${factUrls} dated price URLs in ${facts.length} file(s)`,
+  );
+  const commoditiesPart = await get("/sitemap-commodities.xml");
+  check(
+    "sitemap lists the commodity pages",
+    (commoditiesPart.text.match(/<loc>/g) ?? []).length > 100,
+    `${(commoditiesPart.text.match(/<loc>/g) ?? []).length} commodity URLs`,
+  );
 }
 
 // ── API ─────────────────────────────────────────────────────────────────────

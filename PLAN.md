@@ -115,6 +115,51 @@ checked against the database first; these were true and are now fixed.
 | 7 | `source.url` pointed at an **API endpoint**, not the government report | Points at the DAM report page, with the API alongside it |
 | 8 | `/health` **leaked the internal pipeline state** publicly | Public health returns only what a monitor needs; detail moved behind the admin path |
 
+## Multi-AI audit (21 Oct 2026) — 36 findings, all verified, all fixed
+
+Four independent auditors were given the site and the audit prompts in
+`docs/AUDIT-PROMPTS.md`. Their reports are in
+`docs/Audit-Prompts report by multipul ai.txt`. The deepest of them found
+**36 numbered findings**; a machine-checked harness (`tools/verify-audit.mjs`)
+now proves **31/31 of the testable claims** hold, alongside 60/60 end-to-end
+checks, 75/75 unit tests and 12/12 render checks.
+
+**The root cause of the worst one.** The tools answered with 17 October while
+the pages showed 19 October — *the same commodity, the same district, two
+numbers*. The cause was the materialised `price_latest` table: an ingest that
+is interrupted half way through a multi-day sweep leaves it holding an **older**
+date, and every endpoint that read it published that older figure. The fix is
+structural, not cosmetic: `refreshLatestFor` may now only move that table
+**forward in time** (`WHERE excluded.price_date > price_latest.price_date`), and
+the KV snapshot is built from the newest row per key rather than from whatever
+the table happened to contain.
+
+**What else was wrong, and what fixed it**
+
+| Finding | Fix |
+|---|---|
+| The tools ignored their own `date` parameter | One function (`resolveFact`) decides the date and reads that date's row; the page, the REST API and the MCP all go through it |
+| `verify_claim` called a **correct** claim false, because it silently picked one onion variety | Every variety the claim names is checked; the one whose range contains the figure is named, and the others are listed with their ranges |
+| An English district name in a claim never matched | The head-word guard excluded the exact match it was meant to protect |
+| "গড়" was a **mislabel** — the source's figure is (min+max)/2 in 99% of rows | Published as "মধ্যম-পরিমাণ", with `is_midpoint` on every row and the explanation in the methodology |
+| `min ≤ avg ≤ max` was broken in ~10% of rows | Out-of-range figures are clamped, the row is flagged, and the source's own value is kept in `source_avg`; a source range with min > max is swapped and marked |
+| Two pages published **two different** carry-forward rates (80.9% and 54%) | The rate is counted from the data at request time; both pages now show the same number |
+| The dataset page claimed **505 upazilas** and **16 months** it did not have | Both are counted; the upazila line says the data is not there |
+| `/methodology.md` returned **22 KB of HTML** to an assistant that asked for markdown | The content pages are one data model rendered three ways — HTML, markdown, JSON — so they cannot drift apart |
+| `/api/v1/latest` without a district silently returned **Dhaka** | The district is required; a name works as well as an id; an unknown one is a 400 |
+| The REST API handed out `unit: 2` with **no legend** | `/api/v1/units` publishes the code-to-unit mapping, and the methodology page prints it |
+| The `divisor` was a **hard-coded 100** on every row | The snapshot carries the divisor and its source that the ingest actually recorded (100, 25, 20 …) |
+| The sitemap advertised **none** of the citable per-fact URLs | It is now an index, with the dated fact pages in `sitemap-facts-*.xml` (3,998 of them) |
+| There was **no `:focus-visible`**, no `scope`, and no mobile menu | Added, with a skip link already in place |
+| The MCP cache hint said **1 hour** while the HTTP header said 10 minutes | Both are 10 minutes now |
+| Internal D1 detail leaked in 500 responses | The detail is logged, not published; the client gets a stable 503 shape |
+
+**New tools:** `tools/verify-audit.mjs` (the 31 claims), `tools/check-structure.mjs`
+(page structure), `tools/probe-mcp.mjs` and `tools/probe-resolve.mjs` (matching
+probes), `tools/parse-audit.mjs` + `tools/extract-findings.mjs` (turn the
+reviewers' prose into a checklist), and `test/audit-fix.test.ts` (regression
+tests, one per finding).
+
 ### The constraint the review exposed
 D1's free tier allows **100,000 rows written per day** and **5,000,000 rows read per day**. A 16-month
 backfill is ~700,000 rows, and the old ingest was spending the whole write budget rewriting the

@@ -34,6 +34,11 @@ export interface SnapshotRow {
   wmax: number | null;
   wavg: number | null;
   wu: number | null;
+  /** The unit the upstream used, for audit. */
+  wru: number | null;
+  /** The divisor the ingest recorded — per row, never a constant. */
+  wdiv: number | null;
+  wdivsrc: string | null;
   cf: 0 | 1;
   an: string | null;
 }
@@ -52,6 +57,12 @@ export interface Aggregates {
   rowCount: number;
   commodityCount: number;
   districtCount: number;
+  /** How many of the catalogue's commodities have published prices. */
+  commoditiesWithData: number;
+  /** How many of the 64 districts submitted figures. */
+  districtsWithData: number;
+  /** The number of upazilas the source exposes. */
+  upazilaCount: number;
   carriedPct: number | null;
   busiestDistrictId: number;
   busiestDistrictName: string;
@@ -99,6 +110,9 @@ const EMPTY_AGGREGATES: Aggregates = {
   rowCount: 0,
   commodityCount: 0,
   districtCount: 0,
+  commoditiesWithData: 0,
+  districtsWithData: 0,
+  upazilaCount: 0,
   carriedPct: null,
   busiestDistrictId: 47,
   busiestDistrictName: "ঢাকা",
@@ -129,16 +143,34 @@ async function computeAggregates(env: Env): Promise<Aggregates | null> {
     ]);
 
     let carriedPct: number | null = null;
+    let commoditiesWithData = 0;
+    let districtsWithData = 0;
     const last = span?.last ?? null;
     if (last) {
       const c = await env.DB
         .prepare(
-          `SELECT COUNT(*) AS total, SUM(CASE WHEN carried_forward = 1 THEN 1 ELSE 0 END) AS carried
-             FROM price_daily WHERE price_date = ?`,
+          `SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN carried_forward = 1 THEN 1 ELSE 0 END) AS carried,
+                  COUNT(DISTINCT commodity_id) AS commodities,
+                  COUNT(DISTINCT district_id) AS districts
+             FROM price_daily WHERE price_date = ? AND district_id > 0`,
         )
         .bind(last)
-        .first<{ total: number; carried: number }>();
+        .first<{ total: number; carried: number; commodities: number; districts: number }>();
       if (c?.total) carriedPct = Math.round((c.carried / c.total) * 1000) / 10;
+      commoditiesWithData = c?.commodities ?? 0;
+      districtsWithData = c?.districts ?? 0;
+    }
+
+    // The upazila count comes from the source's own reference table. It is
+    // counted, never asserted: a "505 upazilas" claim on a dataset with
+    // zero upazila rows is the kind of thing an assistant repeats back.
+    let upazilaCount = 0;
+    try {
+      const u = await env.DB.prepare(`SELECT COUNT(*) AS c FROM upazila`).first<{ c: number }>();
+      upazilaCount = u?.c ?? 0;
+    } catch {
+      upazilaCount = 0;
     }
 
     return {
@@ -148,6 +180,9 @@ async function computeAggregates(env: Env): Promise<Aggregates | null> {
       rowCount: span?.rows ?? 0,
       commodityCount: counts?.commodities ?? 0,
       districtCount: counts?.districts ?? 0,
+      commoditiesWithData,
+      districtsWithData,
+      upazilaCount,
       carriedPct,
       busiestDistrictId: busy?.id ?? 47,
       busiestDistrictName: busy?.name ?? "ঢাকা",
@@ -236,7 +271,13 @@ export interface HistoryRow {
   wmax: number | null;
   wavg: number | null;
   wu: number | null;
+  /** The unit the upstream used, for audit. */
+  wru: number | null;
+  /** The divisor the ingest recorded — per row, never a constant. */
+  wdiv: number | null;
+  wdivsrc: string | null;
   cf: 0 | 1;
+  an: string | null;
 }
 
 export async function getHistorySnapshot(env: Env): Promise<{ rows: HistoryRow[] } | null> {
@@ -252,8 +293,15 @@ export async function setAggregates(env: Env, agg: Aggregates): Promise<void> {
   await kvSet(env, AGGREGATE_KEY, agg, AGGREGATE_TTL);
 }
 
-/** Write the current prices to KV so the site keeps working when the
- * database cannot be read. */
+/**
+ * Write the current prices to KV so the site keeps working when the
+ * database cannot be read.
+ *
+ * The rows come from the "latest" table, which the ingest only ever moves
+ * forward in time, so the snapshot cannot hold a stale date. The divisor
+ * and its source are carried across, because a snapshot that reported a
+ * constant 100 would be making a claim the data does not support.
+ */
 export async function writeSnapshot(env: Env): Promise<number> {
   try {
     const { results } = await env.DB
@@ -261,13 +309,21 @@ export async function writeSnapshot(env: Env): Promise<number> {
         `SELECT district_id AS d, commodity_id AS c, group_id AS g, price_date AS t,
                 retail_min AS rmin, retail_max AS rmax, retail_avg AS ravg, retail_unit AS ru,
                 wholesale_min AS wmin, wholesale_max AS wmax, wholesale_avg AS wavg,
-                wholesale_unit AS wu, carried_forward AS cf, anomaly AS an
+                wholesale_unit AS wu, wholesale_raw_unit AS wru,
+                wholesale_divisor AS wdiv, wholesale_divisor_src AS wdivsrc,
+                carried_forward AS cf, anomaly AS an
            FROM price_latest
           WHERE upazila_id = 0 AND district_id > 0`,
       )
       .all();
     const rows = (results ?? []) as unknown as SnapshotRow[];
-    const date = rows.length ? rows[0]?.t ?? null : null;
+    // The date of the newest row, not the date of the first row: the table
+    // is not ordered, and a snapshot labelled with one district's date
+    // would be wrong for the other sixty-three.
+    const date = rows.reduce<string | null>(
+      (max, r) => (max === null || r.t > max ? r.t : max),
+      null,
+    );
     await setSnapshot(env, { at: new Date().toISOString(), date, rows });
     return rows.length;
   } catch {

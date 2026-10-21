@@ -111,6 +111,19 @@ code,kbd{font-family:var(--font-mono);font-size:.86em}
 .nav{display:flex;gap:18px;margin-left:auto;align-items:center;flex-wrap:nowrap;min-width:0}
 .nav a{color:var(--ink-2);font-size:14.5px;font-weight:450;border:0;padding:3px 0;white-space:nowrap}
 .nav a:hover{color:var(--red);border:0}
+/* The mobile menu button. Hidden on wide screens, where the links are
+   already visible. */
+.nav-toggle{
+  display:none;margin-left:auto;width:40px;height:34px;align-items:center;justify-content:center;
+  background:transparent;border:1px solid var(--rule);border-radius:var(--r);cursor:pointer;color:var(--ink);
+}
+.nav-toggle span{display:block;width:16px;height:1.5px;background:currentColor;position:relative}
+.nav-toggle span::before,.nav-toggle span::after{
+  content:"";position:absolute;left:0;width:16px;height:1.5px;background:currentColor;
+}
+.nav-toggle span::before{top:-5px}
+.nav-toggle span::after{top:5px}
+.nav-toggle[aria-expanded="true"]{background:var(--ink);color:var(--paper-2);border-color:var(--ink)}
 .nav-cta{
   font-family:var(--font-mono);font-size:11.5px;letter-spacing:.06em;
   border:1px solid var(--ink);background:var(--ink);color:var(--paper-2);
@@ -318,8 +331,15 @@ footer{border-top:2px solid var(--ink);margin-top:20px;background:var(--paper-2)
 @media (max-width:620px){
   body{font-size:16px}
   .shell{padding:0 16px}
-  .nav{gap:13px}
-  .nav a:not(.nav-cta){display:none}
+  .nav-toggle{display:inline-flex}
+  .nav{
+    display:none;position:absolute;left:0;right:0;top:100%;z-index:40;
+    flex-direction:column;align-items:stretch;gap:0;background:var(--paper-2);
+    border-bottom:1px solid var(--rule);padding:6px 16px 14px;
+  }
+  .nav.open{display:flex}
+  .nav a:not(.nav-cta){display:block;padding:11px 0;border-bottom:1px solid var(--rule-soft);font-size:16px}
+  .nav .nav-cta{display:inline-block;margin-top:12px;align-self:flex-start}
   .hero{padding:30px 0 24px}
   .steps{grid-template-columns:1fr}
   .foot-grid{grid-template-columns:1fr}
@@ -332,6 +352,15 @@ footer{border-top:2px solid var(--ink);margin-top:20px;background:var(--paper-2)
   .ledger-reveal{animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
   @keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 }
+/* A visible focus ring on everything that can be focused. The audit found
+   none: a keyboard user could not tell where they were. */
+:focus-visible{
+  outline:2px solid var(--indigo);
+  outline-offset:2px;
+  border-radius:2px;
+}
+a:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
+.skip:focus-visible{outline:3px solid var(--red);outline-offset:2px}
 `;
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -383,7 +412,7 @@ ${jsonLdBlock}${opts.extraHead ?? ""}
       <span>দরদেখা</span>
       <span class="brand-sub">market ledger</span>
     </a>
-    <nav class="nav">
+    <nav class="nav" id="nav">
       <a href="/price">পণ্য</a>
       <a href="/dataset">ডেটাসেট</a>
       <a href="/methodology">পদ্ধতি</a>
@@ -391,6 +420,7 @@ ${jsonLdBlock}${opts.extraHead ?? ""}
       <a href="/verify">যাচাই</a>
       <a class="nav-cta" href="/mcp">MCP</a>
     </nav>
+    <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav" aria-label="মেনু খুলুন"><span></span></button>
   </div>
 </header>
 <main id="main">
@@ -402,7 +432,7 @@ ${body}
       <div class="foot">
         <div class="foot-brand"><span class="brand-mark">${LOGO_SVG}</span><span>দরদেখা</span></div>
         <p>বাংলাদেশের সরকারি কৃষি বাজারদর, প্রতিদিন — ইউনিট সংশোধিত, উৎসসহ, যাচাইযোগ্য।</p>
-        <p>কোনো সংখ্যা তৈরি করা হয় না। যেখানে উৎসে তথ্য নেই, সেখানে ফাঁকা থাকে।</p>
+        <p>কোনো নতুন সংখ্যা বানানো হয় না — উৎস যা দেয় তাই প্রকাশ করা হয়। যেখানে উৎসে তথ্য নেই, সেখানে ফাঁকা থাকে।</p>
       </div>
       <div class="foot">
         <h4>ডেটা</h4>
@@ -438,7 +468,7 @@ ${body}
       <span>দরদেখা</span><span class="sep">·</span>
       <span>উৎস: কৃষি মন্ত্রণালয় / DAM</span><span class="sep">·</span>
       <span>লাইসেন্স</span><span class="sep">·</span>
-      <span>সর্বশেষ আপডেট ${esc(ctx.generatedAt.slice(0, 16).replace("T", " "))} UTC</span><span class="sep">·</span>
+      <span>সর্বশেষ প্রতিবেদন ${esc(ctx.latestDate ?? "—")}</span><span class="sep">·</span>
       <span>উৎস উল্লেখ করে ব্যবহার করুন</span>
     </div>
   </div>
@@ -482,6 +512,8 @@ export interface HomeData {
   movers: MoverRow[];
   carriedPct: number | null;
   commodityCount: number;
+  /** How many of those commodities actually have published prices. */
+  commoditiesWithData: number;
   districtCount: number;
   rowCount: number;
   dayCount: number;
@@ -560,7 +592,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
       <div>
         <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
         <h1>আজকের <em>বাজারদর</em></h1>
-        <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commodityCount}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
+        <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commoditiesWithData}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
         <p class="stamp-note">সর্বশেষ সরকারি প্রতিবেদন: <strong>${esc(d.latestDate ?? "—")}</strong> · উৎস প্রতিদিন আগের দিনের হিসাব দেয়, তাই প্রতিটি উত্তরে তারিখ দেওয়া আছে।</p>
 
         <div class="lookup">
@@ -582,7 +614,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
 
     <div class="stats">
       <div class="stat"><div class="n">${d.districtCount}<small>টি</small></div><div class="l">জেলা</div></div>
-      <div class="stat"><div class="n">${d.commodityCount}<small>টি</small></div><div class="l">পণ্যের ক্যাটালগ</div></div>
+      <div class="stat"><div class="n">${d.commoditiesWithData}<small>টি</small></div><div class="l">পণ্যে তথ্য (ক্যাটালগে ${d.commodityCount})</div></div>
       <div class="stat"><div class="n">${d.dayCount}<small> দিন</small></div><div class="l">আর্কাইভ</div></div>
       <div class="stat"><div class="n">${d.rowCount.toLocaleString("en-US")}</div><div class="l">তথ্যের সারি</div></div>
     </div>
@@ -600,10 +632,10 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
     <div class="sheet">
       <div class="sheet-bar"><span>আজকের খাতা · ${esc(d.ledgerDistrict)} জেলা</span><span>${esc(d.latestDate ?? "")}</span></div>
       <table class="ledger">
-        <thead><tr><th>পণ্য</th><th>জেলা</th><th class="n">খুচরা</th><th class="n">গড়</th><th class="n">পাইকারি</th><th>অবস্থা</th></tr></thead>
+        <thead><tr><th scope="col">পণ্য</th><th scope="col">জেলা</th><th scope="col" class="n">খুচরা</th><th scope="col" class="n">মধ্যম</th><th scope="col" class="n">পাইকারি</th><th scope="col">অবস্থা</th></tr></thead>
         <tbody>${ledgerRows || '<tr><td colspan="6">এখনো কোনো তথ্য নেই।</td></tr>'}</tbody>
       </table>
-      <a class="sheet-more" href="/price">সব ${d.commodityCount}টি পণ্য ও প্রতিটি জেলার দর দেখুন →</a>
+      <a class="sheet-more" href="/price">ক্যাটালগের সব ${d.commodityCount}টি পণ্য ও প্রতিটি জেলার দর দেখুন →</a>
     </div>
   </div>
 </section>
@@ -704,7 +736,7 @@ export function renderHomeMarkdown(d: HomeData, ctx: RenderContext): string {
     "",
     "## আজকের খাতা",
     "",
-    "| পণ্য | জেলা | খুচরা | গড় | পাইকারি | অবস্থা |",
+    "| পণ্য | জেলা | খুচরা | মধ্যম | পাইকারি | অবস্থা |",
     "|---|---|---|---|---|---|",
   ];
   for (const r of d.ledger) {
@@ -726,8 +758,23 @@ export interface PriceFact {
   districtBn: string;
   districtEn: string;
   date: string;
-  retail: { min: number | null; max: number | null; avg: number | null; unitBn: string; unitEn: string };
-  wholesale: { min: number | null; max: number | null; avg: number | null; unitBn: string; unitEn: string } | null;
+  retail: {
+    min: number | null;
+    max: number | null;
+    avg: number | null;
+    unitBn: string;
+    unitEn: string;
+    /** The source's figure is a mid-range estimate, not a mean over markets. */
+    isMidpoint: boolean;
+  };
+  wholesale: {
+    min: number | null;
+    max: number | null;
+    avg: number | null;
+    unitBn: string;
+    unitEn: string;
+    isMidpoint: boolean;
+  } | null;
   url: string;
   carriedForward: boolean;
   anomaly: string | null;
@@ -789,7 +836,7 @@ export function renderPriceFactHtml(f: PriceFact, ctx: RenderContext): string {
     <div class="sheet" style="margin-top:26px">
       <div class="sheet-bar"><span>${esc(f.date)}</span><span>${esc(ctx.sourceName)}</span></div>
       <table class="ledger">
-        <thead><tr><th>ধরন</th><th class="n">ন্যূনতম</th><th class="n">সর্বোচ্চ</th><th class="n">গড়</th><th>একক</th></tr></thead>
+        <thead><tr><th scope="col">ধরন</th><th scope="col" class="n">ন্যূনতম</th><th scope="col" class="n">সর্বোচ্চ</th><th scope="col" class="n">মধ্যম</th><th scope="col">একক</th></tr></thead>
         <tbody>
           <tr><td class="c-item">খুচরা</td><td class="n">${esc(formatBdt(f.retail.min))}</td><td class="n">${esc(formatBdt(f.retail.max))}</td><td class="n">${esc(formatBdt(f.retail.avg))}</td><td class="c-prov">${esc(f.retail.unitBn)}</td></tr>
           ${
@@ -853,6 +900,9 @@ export function renderPriceFactJson(f: PriceFact, ctx: RenderContext): unknown {
         avg: f.retail.avg,
         unit_bn: f.retail.unitBn,
         unit_en: f.retail.unitEn,
+        // True when the source's figure is (min+max)/2 rather than a mean
+        // over the markets that reported.
+        is_midpoint: f.retail.isMidpoint,
       },
       wholesale: f.wholesale
         ? {
@@ -861,6 +911,7 @@ export function renderPriceFactJson(f: PriceFact, ctx: RenderContext): unknown {
             avg: f.wholesale.avg,
             unit_bn: f.wholesale.unitBn,
             unit_en: f.wholesale.unitEn,
+            is_midpoint: f.wholesale.isMidpoint,
           }
         : null,
     },
@@ -936,7 +987,7 @@ export function renderCommodityHtml(d: CommodityPageData, ctx: RenderContext): s
     <div class="sheet" style="margin-top:26px">
       <div class="sheet-bar"><span>জেলা অনুযায়ী · টাকা</span><span>${esc(d.date ?? "")}</span></div>
       <table class="ledger">
-        <thead><tr><th>জেলা</th><th class="n">খুচরা</th><th class="n">গড়</th><th class="n">পাইকারি</th><th>অবস্থা</th></tr></thead>
+        <thead><tr><th scope="col">জেলা</th><th scope="col" class="n">খুচরা</th><th scope="col" class="n">মধ্যম</th><th scope="col" class="n">পাইকারি</th><th scope="col">অবস্থা</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5">কোনো তথ্য নেই</td></tr>'}</tbody>
       </table>
     </div>
@@ -959,7 +1010,7 @@ function renderTrendBlock(d: CommodityPageData): string {
   return `<div class="sheet" style="margin-top:22px">
       <div class="sheet-bar"><span>শেষ ${pts.length} প্রতিবেদনের ধারা</span><span>${change > 0 ? "▲" : change < 0 ? "▼" : "—"} ${Math.abs(change).toFixed(1)}%</span></div>
       <table class="ledger">
-        <thead><tr><th>তারিখ</th><th class="n">খুচরা গড়</th><th class="n">পাইকারি গড়</th></tr></thead>
+        <thead><tr><th scope="col">তারিখ</th><th scope="col" class="n">খুচরা মধ্যম</th><th scope="col" class="n">পাইকারি মধ্যম</th></tr></thead>
         <tbody>${pts
           .slice()
           .reverse()
@@ -981,7 +1032,7 @@ export function renderCommodityMarkdown(d: CommodityPageData, ctx: RenderContext
     "",
     "## জেলা অনুযায়ী দর",
     "",
-    "| জেলা | খুচরা ন্যূনতম | খুচরা সর্বোচ্চ | খুচরা গড় | পাইকারি গড় |",
+    "| জেলা | খুচরা ন্যূনতম | খুচরা সর্বোচ্চ | খুচরা মধ্যম | পাইকারি মধ্যম |",
     "|---|---|---|---|---|",
   ];
   for (const r of d.districtRows) {

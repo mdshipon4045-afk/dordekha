@@ -107,7 +107,54 @@ export function extractKeywords(text: string | null | undefined): string[] {
 
 /** Case-insensitive comparison form for Bengali + Latin text. */
 export function foldForCompare(input: string | null | undefined): string {
-  return normalizeBn(input).toLowerCase();
+  return applyAliases(normalizeBn(input).toLowerCase());
+}
+
+/**
+ * Spellings that mean the same word.
+ *
+ * A price service is asked for "সয়াবিন তেল" and the catalogue says
+ * "তৈল- সয়াবিন(খোলা)". A service that matches only on exact strings will
+ * tell a shopkeeper that it has no data for the oil they sell. These folds
+ * make the two spellings compare equal.
+ *
+ * The fold is applied on whole words only, so "তৈল" inside a longer word is
+ * left alone.
+ */
+const WORD_ALIASES: Array<[string, string]> = [
+  ["তৈল", "তেল"], // তৈল → তেল
+  ["পিঁয়াজ", "পেঁয়াজ"], // পিঁয়াজ → পেঁয়াজ
+  // The literals above are written as a human writes them, which is not
+  // always the same byte sequence as the form `normalizeBn` produces. The
+  // aliases are folded through the same normalisation as everything else,
+  // so a re-encoded file cannot silently turn a fold into a no-op — the
+  // exact failure this module exists to prevent.
+].map(
+  ([from, to]) =>
+    [normalizeBn(from), normalizeBn(to)] as [string, string],
+);
+
+/** Apply the alias folds to a folded string. */
+function applyAliases(input: string): string {
+  let out = input;
+  for (const [from, to] of WORD_ALIASES) {
+    if (from === to) continue;
+    out = out.replace(new RegExp(`(?<![\\p{L}])${from}(?![\\p{L}])`, "gu"), to);
+  }
+  return out;
+}
+
+/**
+ * The words of a text, with the aliases folded in.
+ *
+ * "সয়াবিন তেল" is two words; the catalogue's "তেল- সয়াবিন(খোলা)" is also
+ * two words once the punctuation is dropped. Comparing word sets is what
+ * lets the two meet.
+ */
+export function wordSet(input: string | null | undefined): string[] {
+  return foldForCompare(input)
+    .split(/[^\p{L}\p{N}\p{M}]+/u)
+    .filter((w) => w.length >= 2);
 }
 
 /**

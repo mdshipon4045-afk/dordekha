@@ -1,7 +1,20 @@
-/* দরদেখা — progressive enhancement for the live lookup.
-   The page is fully server-rendered; this only makes the search feel
-   immediate. Without JavaScript the form still works — it falls back to
-   the /verify page. */
+/* দরদেখা — progressive enhancement.
+   The page is fully server-rendered; this only makes the navigation and
+   the search feel immediate. Without JavaScript the menu links are still
+   in the markup and the form still works — it falls back to the /verify
+   page. */
+
+(function () {
+  var toggle = document.getElementById("nav-toggle");
+  var nav = document.getElementById("nav");
+  if (toggle && nav) {
+    toggle.addEventListener("click", function () {
+      var open = nav.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.setAttribute("aria-label", open ? "মেনু বন্ধ করুন" : "মেনু খুলুন");
+    });
+  }
+})();
 
 (function () {
   var form = document.getElementById("lookup");

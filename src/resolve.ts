@@ -41,6 +41,17 @@ function scoreAgainst(candidate: string, query: string): number {
   const q = foldForCompare(query);
   if (!c || !q) return 0;
   if (c === q) return 100;
+
+  const qWords = q.split(/[\s\-_/(),]+/).filter((w) => w.length > 1);
+  const cWords = c.split(/[\s\-_/(),]+/).filter((w) => w.length > 1);
+
+  // The candidate names everything the query names, and perhaps more:
+  // "তৈল- সয়াবিন(খোলা)" for the query "সয়াবিন তেল". This is a *better*
+  // match than a candidate the query merely contains, because the query
+  // was the more specific of the two — the shopper said "soybean oil",
+  // not "soybean".
+  if (qWords.length > 1 && qWords.every((w) => cWords.includes(w))) return 96;
+
   // The query contains the candidate: "পেঁয়াজ ৬০ টাকা ঢাকায়" contains "পেঁয়াজ".
   if (q.includes(c)) return 95;
   // The candidate contains the query: "পেঁয়াজ" inside "পেঁয়াজ - আলী".
@@ -111,6 +122,7 @@ export function candidatesFor<T extends Resolvable>(list: T[], keywords: string[
   for (const k of keywords) {
     const key = foldForCompare(k);
     if (key.length < 2) continue;
+    const words = key.split(/[^\p{L}\p{N}\p{M}]+/u).filter((w) => w.length >= 2);
     for (const item of list) {
       const bn = foldForCompare(item.nameBn);
       const en = foldForCompare(item.nameEn);
@@ -119,6 +131,11 @@ export function candidatesFor<T extends Resolvable>(list: T[], keywords: string[
       // An English head word ("potato" in "Potato (Local)") also counts.
       const head = en.split(/[\s\-_/(),]+/).find((w) => w.length >= 3);
       if (head && key.includes(head)) out.set(item.id, item);
+      // Every word of a multi-word query present in the candidate, in any
+      // order: "সয়াবিন তেল" must meet "তৈল- সয়াবিন(খোলা)".
+      if (words.length >= 2 && words.every((w) => hasWord(bn, w) || hasWord(en, w))) {
+        out.set(item.id, item);
+      }
     }
   }
   return [...out.values()];
@@ -155,6 +172,67 @@ export function rankByCoverage<T extends Resolvable>(tied: T[], coverage: Map<nu
 }
 
 /**
+ * Every candidate mentioned inside a free-text claim, with a score.
+ *
+ * A claim names a product the way people speak, not the way the catalogue
+ * is written. "পেঁয়াজ ৬০ টাকা ঢাকায়" means the local onion, but the
+ * catalogue says "পেঁয়াজ - আলী" — and a matcher that requires the whole
+ * name to appear will pick "পেঁয়াজ" (the new onion) instead, and then tell
+ * the shopkeeper their price is wrong.
+ *
+ * So all the candidates are returned, ranked by how strongly the text
+ * names them, and the caller can compare the claimed value against each
+ * one instead of trusting a single silent pick.
+ */
+export function findAllInText<T extends Resolvable>(
+  list: T[],
+  text: string,
+  limit = 8,
+): { match: T | null; alternatives: T[]; all: T[] } {
+  const hay = foldForCompare(text);
+  const hayWords = new Set(hay.split(/[^\p{L}\p{N}\p{M}]+/u).filter((w) => w.length >= 2));
+
+  const scored: { item: T; score: number }[] = [];
+  for (const item of list) {
+    const bn = foldForCompare(item.nameBn);
+    const en = foldForCompare(item.nameEn);
+    let score = 0;
+
+    // The whole name is in the text.
+    if (bn && hay.includes(bn)) score = Math.max(score, 100);
+    if (en && hay.includes(en)) score = Math.max(score, 100);
+
+    // Every word of the name is in the text, in any order.
+    const nameWords = [...new Set([...bn.split(/[^\p{L}\p{N}\p{M}]+/u), ...en.split(/[^\p{L}\p{N}\p{M}]+/u)])].filter(
+      (w) => w.length >= 2,
+    );
+    if (nameWords.length >= 2 && nameWords.every((w) => hayWords.has(w))) {
+      score = Math.max(score, 80);
+    }
+
+    // The head word — the product noun — is in the text. "পেঁয়াজ" names
+    // "পেঁয়াজ - আলী" as well as "পেঁয়াজ - আমদানি", and the text cannot
+    // tell them apart. That is a weaker match, and it is ranked lower.
+    const head = en.split(/[\s\-_/(),]+/).find((w) => w.length >= 4) ?? "";
+    const bnHead = bn.split(/[\s\-_/(),]+/).find((w) => w.length >= 2) ?? "";
+    if ((head && hayWords.has(head)) || (bnHead && hayWords.has(bnHead))) {
+      score = Math.max(score, 60);
+    }
+
+    if (score > 0) scored.push({ item, score });
+  }
+
+  scored.sort((a, b) => b.score - a.score || a.item.id - b.item.id);
+  if (scored.length === 0) return { match: null, alternatives: [], all: [] };
+
+  return {
+    match: scored[0]!.item,
+    alternatives: scored.slice(1, limit).map((s) => s.item),
+    all: scored.slice(0, limit).map((s) => s.item),
+  };
+}
+
+/**
  * Extract the commodity and district mentioned in a free-text claim.
  *
  * Works by looking for each known name *inside* the claim, which is the
@@ -166,22 +244,6 @@ export function findInText<T extends Resolvable>(
   text: string,
   limit = 5,
 ): { match: T | null; alternatives: T[] } {
-  const hay = foldForCompare(text);
-  const hits = list
-    .filter((item) => {
-      const bn = foldForCompare(item.nameBn);
-      const en = foldForCompare(item.nameEn);
-      if (bn.length >= 2 && hay.includes(bn)) return true;
-      // The first word of a multi-word English name is often enough
-      // ("Rice - Aman-Fine" → "rice"), but only if the full name is absent.
-      if (en.length >= 4) {
-        const head = en.split(/[\s\-_/(),]+/).find((w) => w.length >= 4) ?? "";
-        if (head && hay.includes(head) && !hay.includes(en)) return true;
-      }
-      return false;
-    })
-    .sort((a, b) => a.id - b.id);
-
-  if (hits.length === 0) return { match: null, alternatives: [] };
-  return { match: hits[0]!, alternatives: hits.slice(1, limit) };
+  const res = findAllInText(list, text, limit + 1);
+  return { match: res.match, alternatives: res.alternatives.slice(0, limit) };
 }

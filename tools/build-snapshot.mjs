@@ -133,6 +133,10 @@ const idx = (name) => plCols.indexOf(name);
 const pl = collect("price_latest");
 console.log(`price_latest rows: ${pl.length}`);
 
+// The current prices are taken from the *history*, not from the "latest"
+// table: the latest table can hold a stale date for a key if a sweep was
+// interrupted, and a stale date on a price service is worse than a missing
+// one — the reader would be told a two-day-old figure is today's.
 const rows = [];
 for (const r of pl) {
   const districtId = Number(r[idx("district_id")]);
@@ -161,20 +165,7 @@ for (const r of pl) {
     an: r[idx("anomaly")] && r[idx("anomaly")] !== "NULL" ? r[idx("anomaly")] : null,
   });
 }
-console.log(`snapshot rows (districts only): ${rows.length}`);
-
-// Aggregates, computed from the same export.
-const dates = new Set(rows.map((r) => r.t));
-const latest = [...dates].sort().pop() ?? null;
-const first = [...dates].sort().shift() ?? null;
-const lastRows = rows.filter((r) => r.t === latest);
-const carried = lastRows.filter((r) => r.cf === 1).length;
-const carriedPct = lastRows.length ? Math.round((carried / lastRows.length) * 1000) / 10 : null;
-
-const byDistrict = new Map();
-for (const r of rows) byDistrict.set(r.d, (byDistrict.get(r.d) ?? 0) + 1);
-let busiest = [47, 0];
-for (const [d, n] of byDistrict) if (n > busiest[1]) busiest = [d, n];
+console.log(`price_latest rows (districts only): ${rows.length}`);
 
 const historyRows = [];
 
@@ -188,7 +179,6 @@ const historyRows = [];
     const d = Number(r[hi("district_id")]);
     if (d === 0) continue;
     const ru = num(r[hi("retail_unit")]);
-    const wu = num(r[hi("wholesale_unit")]);
     historyRows.push({
       t: String(r[hi("price_date")] ?? ""),
       d,
@@ -200,12 +190,101 @@ const historyRows = [];
       wmin: num(r[hi("wholesale_min")]),
       wmax: num(r[hi("wholesale_max")]),
       wavg: num(r[hi("wholesale_avg")]),
+      // The wholesale figure has been divided down to the retail unit, so
+      // that is the unit it is in.
       wu: ru,
+      wru: num(r[hi("wholesale_unit")]),
+      wdiv: num(r[hi("wholesale_divisor")]),
+      wdivsrc: r[hi("wholesale_divisor_src")] ?? null,
       cf: Number(r[hi("carried_forward")]) === 1 ? 1 : 0,
+      an: r[hi("anomaly")] && r[hi("anomaly")] !== "NULL" ? r[hi("anomaly")] : null,
     });
   }
   console.log(`history rows: ${historyRows.length}`);
 }
+
+// The current prices, taken from the history rather than from the "latest"
+// table.
+//
+// The latest table can hold a stale date for a key if a sweep was
+// interrupted, and a stale date on a price service is worse than a missing
+// one: the reader would be told a two-day-old figure is today's. Taking the
+// newest row per key straight from the history removes the possibility.
+{
+  const current = new Map();
+  for (const r of historyRows) {
+    const key = `${r.d}:${r.c}`;
+    const prev = current.get(key);
+    if (!prev || r.t > prev.t) current.set(key, r);
+  }
+  rows.length = 0;
+  for (const r of current.values()) {
+    rows.push({
+      d: r.d,
+      c: r.c,
+      g: 0,
+      t: r.t,
+      rmin: r.rmin,
+      rmax: r.rmax,
+      ravg: r.ravg,
+      ru: r.ru,
+      wmin: r.wmin,
+      wmax: r.wmax,
+      wavg: r.wavg,
+      wu: r.wu,
+      wru: r.wru,
+      wdiv: r.wdiv,
+      wdivsrc: r.wdivsrc,
+      cf: r.cf,
+      an: r.an,
+    });
+  }
+  rows.sort((a, b) => a.d - b.d || a.c - b.c);
+  console.log(`current rows (newest date per key): ${rows.length}`);
+}
+
+// The price_latest table, read for the divisor and its source — the snapshot
+// must carry what the ingest actually recorded, not a constant.
+const plCols2 = columnsOf("price_latest");
+const pi = (n) => plCols2.indexOf(n);
+const divisorByKey = new Map();
+for (const r of collect("price_latest")) {
+  const key = `${Number(r[pi("district_id")])}:${Number(r[pi("commodity_id")])}`;
+  divisorByKey.set(key, {
+    div: num(r[pi("wholesale_divisor")]),
+    src: r[pi("wholesale_divisor_src")] ?? null,
+    rawUnit: num(r[pi("wholesale_unit")]),
+  });
+}
+for (const r of rows) {
+  const d = divisorByKey.get(`${r.d}:${r.c}`);
+  if (d) {
+    r.wdiv = d.div;
+    r.wdivsrc = d.src;
+    r.wru = d.rawUnit;
+  }
+}
+
+// The aggregates, computed from the *history* — not from the "latest"
+// table, which may hold a stale date. Every published figure on the site is
+// derived from these numbers, so they have to come from the same rows the
+// site serves.
+const dates = new Set(historyRows.map((r) => r.t));
+const latest = [...dates].sort().pop() ?? null;
+const first = [...dates].sort().shift() ?? null;
+const lastRows = historyRows.filter((r) => r.t === latest);
+const carried = lastRows.filter((r) => r.cf === 1).length;
+const carriedPct = lastRows.length ? Math.round((carried / lastRows.length) * 1000) / 10 : null;
+const commoditiesWithData = new Set(lastRows.map((r) => r.c)).size;
+const districtsWithData = new Set(lastRows.map((r) => r.d)).size;
+// The upazila table is not part of the export, so the count is zero — and
+// zero is published, rather than a number the data does not support.
+const upazilaCount = 0;
+
+const byDistrict = new Map();
+for (const r of lastRows) byDistrict.set(r.d, (byDistrict.get(r.d) ?? 0) + 1);
+let busiest = [47, 0];
+for (const [d, n] of byDistrict) if (n > busiest[1]) busiest = [d, n];
 
 const payload = {
   snapshot: { at: new Date().toISOString(), date: latest, rows },
@@ -213,9 +292,12 @@ const payload = {
     latestDate: latest,
     firstDate: first,
     days: dates.size,
-    rowCount: rows.length,
+    rowCount: historyRows.length,
     commodityCount: commodities.size,
-    districtCount: districts.size - 1,
+    districtCount: [...districts.keys()].filter((id) => id > 0).length,
+    commoditiesWithData,
+    districtsWithData,
+    upazilaCount,
     carriedPct,
     busiestDistrictId: busiest[0],
     busiestDistrictName: districts.get(busiest[0])?.bn ?? "ঢাকা",

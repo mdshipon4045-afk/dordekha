@@ -6,7 +6,8 @@
 
 import type { MasterData, PriceRecord } from "./types";
 import { commoditySlug, districtSlug } from "./slug";
-import { getHistorySnapshot, getMasterSnapshot, getSnapshot, type SnapshotRow } from "./cache";
+import { getAggregates, getHistorySnapshot, getMasterSnapshot, getSnapshot, type HistoryRow, type SnapshotRow } from "./cache";
+import { cleanPrice } from "./quality";
 import type { Env } from "./types";
 
 /**
@@ -17,6 +18,13 @@ import type { Env } from "./types";
  * answers "500" looks like the data has vanished.
  */
 function snapshotToRow(r: SnapshotRow): PriceRowOut {
+  const retail = cleanPrice({ min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru });
+  const wholesale = cleanPrice({ min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.ru });
+  const anomalies: string[] = [];
+  if (r.an) anomalies.push(r.an);
+  if (retail.repaired) anomalies.push("উৎসের গড় তার নিজের ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+  if (wholesale.repaired) anomalies.push("উৎসের পাইকারি গড় তার ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+
   return {
     priceDate: r.t,
     districtId: r.d,
@@ -24,23 +32,29 @@ function snapshotToRow(r: SnapshotRow): PriceRowOut {
     commodityId: r.c,
     groupId: r.g,
     subGroupId: 0,
-    retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
-    wholesale:
-      r.wavg === null
-        ? null
-        : {
-            min: r.wmin,
-            max: r.wmax,
-            avg: r.wavg,
-            // The value is in the commodity's retail unit, so that is the only
-            // honest label. The upstream's own unit is kept for audit.
-            unit: r.ru,
-            rawUnit: r.wu,
-            divisor: 100,
-            divisorSource: "table",
-          },
+    retail: {
+      min: retail.min,
+      max: retail.max,
+      avg: retail.avg,
+      unit: r.ru,
+      isMidpoint: retail.isMidpoint,
+      sourceAvg: retail.sourceAvg,
+      rangeSwapped: retail.rangeSwapped,
+    },
+    wholesale: {
+      min: wholesale.min,
+      max: wholesale.max,
+      avg: wholesale.avg,
+      unit: r.ru,
+      rawUnit: r.wru ?? r.wu,
+      divisor: r.wdiv ?? 100,
+      divisorSource: r.wdivsrc,
+      isMidpoint: wholesale.isMidpoint,
+      sourceAvg: wholesale.sourceAvg,
+      rangeSwapped: wholesale.rangeSwapped,
+    },
     carriedForward: r.cf === 1,
-    anomaly: r.an,
+    anomaly: anomalies.length ? anomalies.join("; ") : null,
   };
 }
 
@@ -195,22 +209,50 @@ export async function historyForOrSnapshot(
       .filter((r) => r.c === commodityId && r.d === districtId && r.t >= sinceDate)
       .sort((a, b) => (a.t < b.t ? 1 : -1))
       .slice(0, limit)
-      .map((r) => ({
-        priceDate: r.t,
-        districtId: r.d,
-        upazilaId: 0,
-        commodityId: r.c,
-        groupId: 0,
-        subGroupId: 0,
-        retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
-        wholesale:
-          r.wavg === null
-            ? null
-            : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
-        carriedForward: r.cf === 1,
-        anomaly: null,
-      }));
+      .map(historyRowToOut);
   }
+}
+
+/** Map a cached history row onto the published shape. */
+function historyRowToOut(r: HistoryRow): PriceRowOut {
+  const retail = cleanPrice({ min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru });
+  const wholesale = cleanPrice({ min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.ru });
+  const anomalies: string[] = [];
+  if (r.an) anomalies.push(r.an);
+  if (retail.repaired) anomalies.push("উৎসের গড় তার নিজের ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+  if (wholesale.repaired) anomalies.push("উৎসের পাইকারি গড় তার ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+
+  return {
+    priceDate: r.t,
+    districtId: r.d,
+    upazilaId: 0,
+    commodityId: r.c,
+    groupId: 0,
+    subGroupId: 0,
+    retail: {
+      min: retail.min,
+      max: retail.max,
+      avg: retail.avg,
+      unit: r.ru,
+      isMidpoint: retail.isMidpoint,
+      sourceAvg: retail.sourceAvg,
+      rangeSwapped: retail.rangeSwapped,
+    },
+    wholesale: {
+      min: wholesale.min,
+      max: wholesale.max,
+      avg: wholesale.avg,
+      unit: r.ru,
+      rawUnit: r.wru ?? r.wu,
+      divisor: r.wdiv ?? 100,
+      divisorSource: r.wdivsrc,
+      isMidpoint: wholesale.isMidpoint,
+      sourceAvg: wholesale.sourceAvg,
+      rangeSwapped: wholesale.rangeSwapped,
+    },
+    carriedForward: r.cf === 1,
+    anomaly: anomalies.length ? anomalies.join("; ") : null,
+  };
 }
 
 /** One price on one date, from the database or the cached history. */
@@ -227,22 +269,51 @@ export async function priceForDateOrSnapshot(
     if (!hist) throw err;
     const r = hist.rows.find((x) => x.c === commodityId && x.d === districtId && x.t === date);
     if (!r) return null;
-    return {
-      priceDate: r.t,
-      districtId: r.d,
-      upazilaId: 0,
-      commodityId: r.c,
-      groupId: 0,
-      subGroupId: 0,
-      retail: r.ravg === null ? null : { min: r.rmin, max: r.rmax, avg: r.ravg, unit: r.ru },
-      wholesale:
-        r.wavg === null
-          ? null
-          : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
-      carriedForward: r.cf === 1,
-      anomaly: null,
-    };
+    return historyRowToOut(r);
   }
+}
+
+/**
+ * One price fact, resolved the same way for every surface.
+ *
+ * The audit found the product publishing two different numbers for the same
+ * fact: the page showed one day's figures and the API showed another day's.
+ * The cause was that the "latest" table and the daily history could hold
+ * different dates for the same key, and different endpoints read different
+ * tables.
+ *
+ * So there is one function, and every surface — the HTML page, the REST API,
+ * the MCP tool — goes through it. The date is decided first, from the
+ * published aggregate, and then the row for *that* date is read. There is no
+ * second place where a date can be decided.
+ */
+export async function resolveFact(
+  env: Env,
+  commodityId: number,
+  districtId: number,
+  date?: string | null,
+): Promise<PriceRowOut | null> {
+  let target = date ?? null;
+  if (!target) {
+    const agg = await getAggregates(env);
+    target = agg.latestDate;
+  }
+  if (!target) {
+    // No date is known at all: fall back to whatever the latest table has.
+    const rows = await latestForDistrictOrSnapshot(env, districtId, 1000);
+    return rows.find((r) => r.commodityId === commodityId) ?? null;
+  }
+
+  const exact = await priceForDateOrSnapshot(env, commodityId, districtId, target);
+  if (exact) return exact;
+
+  if (date) return null; // a date was asked for and the source has nothing
+
+  // The aggregate names a date this particular key does not have (the
+  // district did not report that day). Use the key's own most recent row,
+  // and let the caller see which date it got.
+  const rows = await latestForDistrictOrSnapshot(env, districtId, 1000);
+  return rows.find((r) => r.commodityId === commodityId) ?? null;
 }
 
 export interface DbEnv {
@@ -256,7 +327,18 @@ export interface PriceRowOut {
   commodityId: number;
   groupId: number;
   subGroupId: number;
-  retail: { min: number | null; max: number | null; avg: number | null; unit: number | null } | null;
+  retail: {
+    min: number | null;
+    max: number | null;
+    avg: number | null;
+    unit: number | null;
+    /** The source's figure is a mid-range estimate, not a mean over markets. */
+    isMidpoint: boolean;
+    /** The source's own figure, before any repair. */
+    sourceAvg: number | null;
+    /** True when the source's min was larger than its max. */
+    rangeSwapped: boolean;
+  } | null;
   wholesale: {
     min: number | null;
     max: number | null;
@@ -265,8 +347,12 @@ export interface PriceRowOut {
     unit: number | null;
     /** The unit the upstream used, for audit. */
     rawUnit: number | null;
+    /** The divisor the ingest recorded for this row. */
     divisor: number | null;
     divisorSource: string | null;
+    isMidpoint: boolean;
+    sourceAvg: number | null;
+    rangeSwapped: boolean;
   } | null;
   carriedForward: boolean;
   anomaly: string | null;
@@ -284,6 +370,26 @@ function mapRow(r: Record<string, unknown>): PriceRowOut {
   const hasRetail = r.retail_avg !== null && r.retail_avg !== undefined;
   const hasWholesale = r.wholesale_avg !== null && r.wholesale_avg !== undefined;
   const retailUnit = num(r.retail_unit);
+
+  const retail = hasRetail
+    ? cleanPrice({ min: num(r.retail_min), max: num(r.retail_max), avg: num(r.retail_avg), unit: retailUnit })
+    : null;
+  const wholesale = hasWholesale
+    ? cleanPrice({
+        min: num(r.wholesale_min),
+        max: num(r.wholesale_max),
+        avg: num(r.wholesale_avg),
+        // The wholesale figure is divided down to the commodity's retail
+        // unit, so that is the unit it is in.
+        unit: retailUnit,
+      })
+    : null;
+
+  const anomalies: string[] = [];
+  if ((r.anomaly as string | null) ?? null) anomalies.push(String(r.anomaly));
+  if (retail?.repaired) anomalies.push("উৎসের গড় তার নিজের ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+  if (wholesale?.repaired) anomalies.push("উৎসের পাইকারি গড় তার ব্যাপ্তির বাইরে ছিল — সংশোধন করা হয়েছে");
+
   return {
     priceDate: String(r.price_date),
     districtId: Number(r.district_id),
@@ -291,24 +397,33 @@ function mapRow(r: Record<string, unknown>): PriceRowOut {
     commodityId: Number(r.commodity_id),
     groupId: Number(r.group_id),
     subGroupId: Number(r.sub_group_id),
-    retail: hasRetail
-      ? { min: num(r.retail_min), max: num(r.retail_max), avg: num(r.retail_avg), unit: retailUnit }
-      : null,
-    wholesale: hasWholesale
+    retail: retail
       ? {
-          min: num(r.wholesale_min),
-          max: num(r.wholesale_max),
-          avg: num(r.wholesale_avg),
-          // The value is in the retail unit; the upstream's own unit is kept
-          // only for audit.
+          min: retail.min,
+          max: retail.max,
+          avg: retail.avg,
+          unit: retailUnit,
+          isMidpoint: retail.isMidpoint,
+          sourceAvg: retail.sourceAvg,
+          rangeSwapped: retail.rangeSwapped,
+        }
+      : null,
+    wholesale: wholesale
+      ? {
+          min: wholesale.min,
+          max: wholesale.max,
+          avg: wholesale.avg,
           unit: retailUnit,
           rawUnit: num(r.wholesale_raw_unit) ?? num(r.wholesale_unit),
           divisor: num(r.wholesale_divisor),
           divisorSource: (r.wholesale_divisor_src as string | null) ?? null,
+          isMidpoint: wholesale.isMidpoint,
+          sourceAvg: wholesale.sourceAvg,
+          rangeSwapped: wholesale.rangeSwapped,
         }
       : null,
     carriedForward: Number(r.carried_forward) === 1,
-    anomaly: (r.anomaly as string | null) ?? null,
+    anomaly: anomalies.length ? anomalies.join("; ") : null,
   };
 }
 
@@ -395,6 +510,14 @@ export async function upsertPrices(db: D1Database, records: PriceRecord[]): Prom
  * time was writing 3,900 rows per call, and with a few hundred calls that
  * is the entire daily write budget of the free tier spent on a table that
  * only ever holds one date per key.
+ *
+ * The table may never move backwards in time. A sweep of an older report
+ * day — the backfill sweeps from the oldest day forward, and a job can be
+ * interrupted half way — must not be able to replace a newer date with an
+ * older one. That single rule is what stops the site from publishing a
+ * two-day-old price as today's: the audit found the MCP tools answering
+ * with 17 October while the pages showed 19 October, and the cause was
+ * exactly this table holding the older date for some districts.
  */
 export async function refreshLatestFor(
   db: D1Database,
@@ -425,7 +548,8 @@ export async function refreshLatestFor(
          wholesale_min=excluded.wholesale_min, wholesale_max=excluded.wholesale_max, wholesale_avg=excluded.wholesale_avg,
          wholesale_unit=excluded.wholesale_unit, wholesale_raw_unit=excluded.wholesale_raw_unit,
          wholesale_divisor=excluded.wholesale_divisor, wholesale_divisor_src=excluded.wholesale_divisor_src,
-         carried_forward=excluded.carried_forward, anomaly=excluded.anomaly, updated_at=excluded.updated_at`,
+         carried_forward=excluded.carried_forward, anomaly=excluded.anomaly, updated_at=excluded.updated_at
+       WHERE excluded.price_date > price_latest.price_date`,
     )
     .bind(new Date().toISOString(), priceDate, ...districtIds)
     .run();
