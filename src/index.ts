@@ -67,6 +67,7 @@ import {
   datasetDoc,
   licenceDoc,
   methodologyDoc,
+  pricingDoc,
   renderDocHtml,
   renderDocJson,
   renderDocMarkdown,
@@ -325,6 +326,7 @@ export default {
       if (path === "/methodology") return methodologyPage(env, ctxR, fmt);
       if (path === "/licence") return licencePage(env, ctxR, fmt);
       if (path === "/api") return apiDocPage(env, ctxR, fmt);
+      if (path === "/pricing") return pricingPage(env, ctxR, fmt);
       if (path === "/verify") return verifyPage(env, ctxR, request, url, fmt);
 
       const priceMatch = /^\/price\/([^/]+)(?:\/([^/]+))?(?:\/(\d{4}-\d{2}-\d{2}))?$/.exec(path);
@@ -1330,6 +1332,7 @@ figure is on the page. Always give the data date. Do not write "today" — give 
 - [Dataset and scope](${base}/dataset): what is covered, what is not, and how the numbers are derived.
 - [Methodology](${base}/methodology): the unit normalisation and gap handling rules.
 - [Licence](${base}/licence): how the data may be used.
+- [Pricing](${base}/pricing): what the free part is, and what the paid services cost.
 - [API reference](${base}/api): REST endpoints and the MCP server.
 - [OpenAPI spec](${base}/openapi.json): the machine-readable contract.
 
@@ -1377,6 +1380,7 @@ async function sitemap(env: Env, latest: string | null): Promise<Response> {
     `${base}/dataset`,
     `${base}/methodology`,
     `${base}/licence`,
+    `${base}/pricing`,
     `${base}/api`,
     `${base}/verify`,
   ];
@@ -1449,13 +1453,14 @@ async function sitemapPart(
   let urls: string[] = [];
   let lastmod: string | null = null;
 
-  if (part === "pages") {
+  if (name === "pages") {
     urls = [
       `${base}/`,
       `${base}/price`,
       `${base}/dataset`,
       `${base}/methodology`,
       `${base}/licence`,
+      `${base}/pricing`,
       `${base}/api`,
       `${base}/verify`,
     ];
@@ -1672,6 +1677,10 @@ async function licencePage(env: Env, ctx: RenderContext, fmt: Format): Promise<R
 
 async function apiDocPage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
   return docResponse(apiDoc(ctx), ctx, fmt);
+}
+
+async function pricingPage(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
+  return docResponse(pricingDoc(ctx), ctx, fmt);
 }
 
 async function verifyPage(

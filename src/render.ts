@@ -417,6 +417,7 @@ ${jsonLdBlock}${opts.extraHead ?? ""}
       <a href="/dataset">ডেটাসেট</a>
       <a href="/methodology">পদ্ধতি</a>
       <a href="/api">API</a>
+      <a href="/pricing">মূল্য</a>
       <a href="/verify">যাচাই</a>
       <a class="nav-cta" href="/mcp">MCP</a>
     </nav>
@@ -449,9 +450,9 @@ ${body}
         <ul>
           <li><a href="/api">REST API</a></li>
           <li><a href="/mcp">MCP server</a></li>
+          <li><a href="/pricing">মূল্য</a></li>
           <li><a href="/licence">লাইসেন্স</a></li>
           <li><a href="/llms.txt">llms.txt</a></li>
-          <li><a href="/sitemap.xml">sitemap</a></li>
         </ul>
       </div>
       <div class="foot">

@@ -527,8 +527,110 @@ curl -H "Accept: application/json" /price/পণ্য/জেলা/তারি
   };
 }
 
-/* ── the shared layout ─────────────────────────────────────────────────────── */
+/**
+ * The pricing page.
+ *
+ * The audit's business review found one thing that was missing entirely: a
+ * page a potential customer could look at. There was a licence page, an API
+ * page and a dataset page, but nothing that said what the product costs and
+ * how to buy it — so the commercial offer existed only in a plan file
+ * nobody outside the project could read.
+ *
+ * The prices are the same ones the plan has always carried. Nothing is
+ * invented here, and the licence status is stated plainly rather than
+ * implied away.
+ */
+export function pricingDoc(ctx: RenderContext): Doc {
+  return {
+    slug: "/pricing",
+    kicker: "মূল্য",
+    title: "মূল্য ও কীভাবে কেনা যায়",
+    lead:
+      "দরদেখার সংখ্যা সবার জন্য উন্মুক্ত — সেটি বদলাবে না। টাকা লাগে শুধু উন্নত সেবার জন্য: বাণিজ্যিক API, পূর্ণ ইতিহাসের বাল্ক ডেটা, প্রতিদিনের অ্যালার্ট ও MCP server।",
+    description:
+      "দরদেখার মূল্য: বিনা টাকায় উন্মুক্ত ডেটা ও API, বাণিজ্যিক API লাইসেন্স, বাল্ক এক্সপোর্ট ও প্রতিদিনের অ্যালার্ট।",
+    sections: [
+      {
+        kind: "table",
+        label: "পরিকল্পনা",
+        aside: "টাকা প্রতি মাস, বাংলাদেশি টাকায়",
+        head: ["পরিকল্পনা", "মূল্য", "যা পাবেন"],
+        rows: [
+          [
+            "উন্মুক্ত",
+            "৳০",
+            "ওয়েবসাইটের সব পাতা, প্রতিটি তথ্যের পার্মালিংক, `.md` ও `.json` সংস্করণ, MCP server, সীমিত REST API, ডেটাসেট ও পদ্ধতির নথি",
+          ],
+          [
+            "বাণিজ্যিক API",
+            "৳২,০০০",
+            "API key, বাণিজ্যিক ব্যবহারের লাইসেন্স, রেট-লিমিট ও কোটা, উচ্চতর নির্ভরযোগ্যতা, ইমেইলে সাপোর্ট",
+          ],
+          [
+            "বাল্ক ডেটা",
+            "৳১০,০০০",
+            "পূর্ণ ইতিহাসের CSV/JSON এক্সপোর্ট (৬৪ জেলা × সব পণ্য × সব প্রতিবেদনের দিন), কাস্টম সীমা, ফাইল বা S3 লিংকে",
+          ],
+          [
+            "অ্যালার্ট",
+            "৳৫০০",
+            "নির্দিষ্ট পণ্য ও জেলার দর প্রতিদিন পরিবর্তন হলে টেলিগ্রামে ও ওয়েবহুকে সতর্কতা",
+          ],
+          [
+            "MCP server",
+            "৳৩,০০০",
+            "আপনার AI সহকারীর জন্য বাণিজ্যিক ব্যবহার, প্রতিটি ফলাফলে আপনার উদ্ধৃতি URL, উচ্চ কোটা",
+          ],
+          ["এন্টারপ্রাইজ", "প্রতিবেদন", "একাধিক জেলা, SLA, নির্দিষ্ট স্কিমা, বকেয়া ব্যবস্থাপত্তা"],
+        ],
+      },
+      {
+        kind: "pillars",
+        items: [
+          {
+            kicker: "০১",
+            title: "যা সবসময় ফ্রি থাকবে",
+            body:
+              "ওয়েবসাইটের সব পাতা, প্রতি-তথ্যের পার্মালিংক, Markdown ও JSON সংস্করণ, MCP server, এবং REST API-এর সাধারণ ব্যবহার। এগুলো বাণিজ্যিকভাবেও ফ্রি — আমরা সংখ্যা বিক্রি করি না, সেবা বিক্রি করি।",
+          },
+          {
+            kicker: "০২",
+            title: "আমরা কী দিই না",
+            body:
+              "আমরা কোনো সংখ্যা ফ্যাক্টরি বা অনুমানভিত্তিক ডেটা বিক্রি করি না। যে সারি আপনি কিনবেন, সেটি উৎসের সঙ্গে হুবহু মিলিয়ে যাচাই করা যাবে — প্রতিটি সারিতে তারিখ, উৎস ও ইউনিট-গুণক সংরক্ষিত।",
+          },
+          {
+            kicker: "০৩",
+            title: "লাইসেন্সের অবস্থা",
+            body:
+              "কৃষি বিপণন অধিদপ্তরের সঙ্গে তথ্য-ব্যবহারের লাইসেন্সের আবেদন চলছে। লাইসেন্স চালু হওয়ার আগে আমরা কোনো বাণিজ্যিক ফি নিই না — এই ধাপে কেউ চাইলে বিনা টাকায় পাইলট ফি নিতে পারে।",
+          },
+        ],
+      },
+      {
+        kind: "sheet",
+        label: "যোগাযোগ",
+        aside: "উত্তর ২৪ ঘণ্টার মধ্যে",
+        code: `bKash (ব্যক্তিগত): 01730534955
+ইমেইল: অনুরোধের সাথে আসবে
+ওয়েবসাইট: ${ctx.origin.replace(/\/$/, "")}
 
+যা লিখুন:
+  ১. কী লাগবে (API / বাল্ক / অ্যালার্ট / MCP)
+  ২. কত জেলা ও কত পণ্য
+  ৩. কত ঘণ্টা পরিবর্তনের সতর্কতা দরকার
+  ৪. (ঐচ্ছিক) আপনার API key-এর বা ওয়েবহুকের ঠিকানা`,
+      },
+      {
+        kind: "callout",
+        body:
+          "দ্রুত পরীক্ষা করতে চান? MCP serverটি এখনই চালু — কোনো চাবি লাগে না। পরীক্ষা করে সিদ্ধান্ত নিতে চাইলে ইমেইল করুন, ফ্রি পাইলট চালু করে দেব।",
+      },
+    ],
+  };
+}
+
+/* ── the shared layout ─────────────────────────────────────────────────────── */
 import { layout as layoutInner } from "./render";
 function renderLayout(o: Parameters<typeof layoutInner>[0]): string {
   return layoutInner(o);
