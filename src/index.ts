@@ -18,8 +18,8 @@ import {
   ingestHealth,
   latestForCommodityOrSnapshot,
   latestForDistrictOrSnapshot,
-  ledgerRows,
-  movers,
+  ledgerRowsOrSnapshot,
+  moversOrSnapshot,
   priceForDateOrSnapshot,
   resolveFact,
   unitNames,
@@ -403,12 +403,14 @@ async function homePage(
       days: aggregates.days,
     }),
     Promise.resolve(aggregates.carriedPct),
-    movers(env.DB, 6).catch(() => []),
+    // From the cache where possible: this is the most visited page, and it
+    // must not spend the database's daily read budget.
+    moversOrSnapshot(env, 6).catch(() => []),
   ]);
 
-  // The ledger sheet is a nicety; if the database cannot be read right now,
-  // the page still renders with the rest of it.
-  const rows = await ledgerRows(env.DB, district.id, 16).catch(() => []);
+  // The ledger sheet is a nicety; if neither the cache nor the database can
+  // be read right now, the page still renders with the rest of it.
+  const rows = await ledgerRowsOrSnapshot(env, district.id, 16).catch(() => []);
   const ledger = rows.map((r) => ({
     commodityBn: r.commodityBn,
     commodityEn: r.commodityEn,

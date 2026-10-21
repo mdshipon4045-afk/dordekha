@@ -128,8 +128,19 @@ export async function commodityCoverageOrSnapshot(
   }
 }
 
-/** The commodity list, from the database or the cache. */
+/**
+ * The commodity list.
+ *
+ * The cache comes first. The database copy of this list is 447 rows plus a
+ * join, and the list is read by nearly every route — the search, the price
+ * index, the sitemap, the movers board. Asking the database each time spent
+ * thousands of rows of the daily read budget on data that had not changed
+ * since the last master refresh. The cache holds the same list, written by
+ * the same refresh, so the database is only asked when the cache is empty.
+ */
 export async function commodityRefs(env: Env): Promise<CommodityRef[]> {
+  const master = await getMasterSnapshot(env);
+  if (master && master.commodities.length > 0) return master.commodities;
   try {
     const { results } = await env.DB
       .prepare(
@@ -152,14 +163,15 @@ export async function commodityRefs(env: Env): Promise<CommodityRef[]> {
       };
     });
   } catch (err) {
-    const master = await getMasterSnapshot(env);
     if (!master) throw err;
     return master.commodities;
   }
 }
 
-/** The district list, from the database or the cache. */
+/** The district list, from the cache or the database. */
 export async function districtRefs(env: Env): Promise<DistrictRef[]> {
+  const master = await getMasterSnapshot(env);
+  if (master && master.districts.length > 0) return master.districts;
   try {
     const { results } = await env.DB
       .prepare(`SELECT id, name_bn, name_en FROM district WHERE id > 0 ORDER BY id`)
@@ -169,14 +181,17 @@ export async function districtRefs(env: Env): Promise<DistrictRef[]> {
       return { id: Number(row.id), nameBn: String(row.name_bn ?? ""), nameEn: String(row.name_en ?? "") };
     });
   } catch (err) {
-    const master = await getMasterSnapshot(env);
     if (!master) throw err;
     return master.districts;
   }
 }
 
-/** The unit list, from the database or the cache. */
+/** The unit list, from the cache or the database. */
 export async function unitNames(env: Env): Promise<Map<number, string>> {
+  const master = await getMasterSnapshot(env);
+  if (master && master.units.length > 0) {
+    return new Map(master.units.map((u) => [u.id, u.nameBn]));
+  }
   try {
     const { results } = await env.DB.prepare(`SELECT id, name_bn FROM unit`).all();
     const map = new Map<number, string>();
@@ -186,7 +201,6 @@ export async function unitNames(env: Env): Promise<Map<number, string>> {
     }
     return map;
   } catch (err) {
-    const master = await getMasterSnapshot(env);
     if (!master) throw err;
     return new Map(master.units.map((u) => [u.id, u.nameBn]));
   }
@@ -848,6 +862,134 @@ export interface MoverRowDb {
   now: number | null;
   was: number | null;
   changePct: number | null;
+}
+
+/**
+ * The movers board, computed from the cached history.
+ *
+ * The database version of this query joins the whole history table against
+ * itself — 11,000 rows now, and seven hundred thousand once the backfill
+ * finishes. That is a quarter of the daily read budget for *one page view*,
+ * and the home page is the most visited page there is. Computing the same
+ * thing from the cached history costs no database rows at all, so this is
+ * tried first and the database is only asked when the cache is empty.
+ */
+export async function moversOrSnapshot(env: Env, limit = 6): Promise<MoverRowDb[]> {
+  try {
+    const hist = await getHistorySnapshot(env);
+    if (hist && hist.rows.length > 0) {
+      const dates = [...new Set(hist.rows.map((r) => r.t))].sort().reverse();
+      if (dates.length < 2) return [];
+      const [newer, older] = dates as [string, string];
+
+      const olderByKey = new Map<string, HistoryRow>();
+      for (const r of hist.rows) if (r.t === older) olderByKey.set(`${r.d}:${r.c}`, r);
+
+      const commodities = await commodityRefs(env);
+      const districts = await districtRefs(env);
+      const cname = new Map(commodities.map((c) => [c.id, c.nameBn]));
+      const dname = new Map(districts.map((d) => [d.id, d.nameBn]));
+
+      const out: MoverRowDb[] = [];
+      for (const r of hist.rows) {
+        if (r.t !== newer) continue;
+        // A value the upstream copied forward did not move.
+        if (r.cf === 1) continue;
+        if (r.an) continue;
+        if (r.ravg === null || r.ravg === 0) continue;
+        const o = olderByKey.get(`${r.d}:${r.c}`);
+        if (!o || o.ravg === null || o.an) continue;
+        if (o.ravg === r.ravg) continue;
+        const change = (r.ravg - o.ravg) / r.ravg;
+        // A move over 100% is a data-entry error far more often than a market.
+        if (Math.abs(change) > 1.0) continue;
+        out.push({
+          commodityBn: cname.get(r.c) ?? String(r.c),
+          districtBn: dname.get(r.d) ?? String(r.d),
+          now: r.ravg,
+          was: o.ravg,
+          changePct: change * 100,
+        });
+      }
+      out.sort((a, b) => Math.abs(b.changePct ?? 0) - Math.abs(a.changePct ?? 0));
+      return out.slice(0, limit);
+    }
+  } catch {
+    /* fall through to the database */
+  }
+  try {
+    return await movers(env.DB, limit);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The ledger rows for the home page, from the cache where possible.
+ *
+ * The same reasoning as the movers: the home page is the most visited page,
+ * and it should not cost a database read while a current, correct snapshot
+ * is sitting in the cache.
+ */
+export async function ledgerRowsOrSnapshot(
+  env: Env,
+  districtId: number,
+  limit = 14,
+): Promise<LedgerRowDb[]> {
+  try {
+    const snap = await getSnapshot(env);
+    if (snap && snap.rows.length > 0) {
+      const commodities = await commodityRefs(env);
+      const districts = await districtRefs(env);
+      const units = await unitNames(env);
+      const cm = new Map(commodities.map((c) => [c.id, c]));
+      const dm = new Map(districts.map((d) => [d.id, d]));
+
+      const rows: LedgerRowDb[] = [];
+      for (const r of snap.rows) {
+        if (r.d !== districtId || r.ravg === null) continue;
+        const c = cm.get(r.c);
+        const d = dm.get(r.d);
+        if (!c || !d) continue;
+        rows.push({
+          commodityId: r.c,
+          districtId: r.d,
+          commodityBn: c.nameBn,
+          commodityEn: c.nameEn,
+          commoditySlug: commoditySlug(c.nameBn, c.nameEn, c.id),
+          districtBn: d.nameBn,
+          districtEn: d.nameEn,
+          districtSlug: districtSlug(d.nameBn, d.nameEn, d.id),
+          retail: {
+            min: r.rmin,
+            max: r.rmax,
+            avg: r.ravg,
+            unitBn: units.get(r.ru ?? 0) ?? "কেজি",
+          },
+          wholesale:
+            r.wavg === null
+              ? null
+              : { min: r.wmin, max: r.wmax, avg: r.wavg },
+          carriedForward: r.cf === 1,
+          date: r.t,
+        });
+      }
+      // The database version orders by group then name; keep the same order.
+      rows.sort(
+        (a, b) =>
+          (cm.get(a.commodityId)?.groupId ?? 0) - (cm.get(b.commodityId)?.groupId ?? 0) ||
+          a.commodityBn.localeCompare(b.commodityBn, "bn"),
+      );
+      return rows.slice(0, limit);
+    }
+  } catch {
+    /* fall through to the database */
+  }
+  try {
+    return await ledgerRows(env.DB, districtId, limit);
+  } catch {
+    return [];
+  }
 }
 
 /** The ledger rows for the home page: the most recent report, in one district. */
