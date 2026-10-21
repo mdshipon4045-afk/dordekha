@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "node tools/e2e.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "probe": "node tools/probe.mjs",
     "probe2": "node tools/probe2.mjs",
     "d1:create": "wrangler d1 create dordekha",
@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261019.1",
+    "@types/node": "^26.6.5",
     "typescript": "^5.9.2",
     "vitest": "^4.0.0",
     "wrangler": "^4.151.3"

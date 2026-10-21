@@ -83,6 +83,20 @@ img,svg{max-width:100%}
 code,kbd{font-family:var(--font-mono);font-size:.86em}
 .shell{max-width:var(--shell);margin:0 auto;padding:0 22px}
 
+/* ── skip link ────────────────────────────────────────────────────────── */
+/* Hidden from the page, but reachable by keyboard: a keyboard user must be
+   able to jump past the navigation. Standard pattern — visually hidden
+   until focused. */
+.skip{
+  position:absolute;left:-9999px;top:0;width:1px;height:1px;padding:0;margin:0;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;
+}
+.skip:focus{
+  position:fixed;left:14px;top:12px;z-index:200;width:auto;height:auto;
+  clip:auto;overflow:visible;background:var(--ink);color:var(--paper-2);
+  padding:10px 16px;border-radius:var(--r);font-size:15px;text-decoration:none;
+}
+
 /* ── masthead ─────────────────────────────────────────────────────────── */
 .masthead{
   position:sticky;top:0;z-index:50;background:rgba(238,241,247,.93);
