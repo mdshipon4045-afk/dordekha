@@ -497,6 +497,7 @@ async function homePage(
     commodityCount: number;
     commoditiesWithData: number;
     districtCount: number;
+    districtsWithData: number;
     rowCount: number;
     days: number;
     carriedPct: number | null;
@@ -548,6 +549,7 @@ async function homePage(
     commodityCount: stats.commodities,
     commoditiesWithData: aggregates.commoditiesWithData,
     districtCount: stats.districts,
+    districtsWithData: aggregates.districtsWithData,
     rowCount: stats.rows,
     dayCount: stats.days,
   };

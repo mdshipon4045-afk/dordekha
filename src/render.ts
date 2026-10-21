@@ -516,6 +516,8 @@ export interface HomeData {
   /** How many of those commodities actually have published prices. */
   commoditiesWithData: number;
   districtCount: number;
+  /** How many of those districts actually have published prices. */
+  districtsWithData?: number;
   rowCount: number;
   dayCount: number;
 }
@@ -593,7 +595,7 @@ export function renderHomeHtml(d: HomeData, ctx: RenderContext): string {
       <div>
         <div class="eyebrow"><span class="dot"></span> কৃষি মন্ত্রণালয় · অনলাইন বাজারদর রিপোর্ট থেকে</div>
         <h1>আজকের <em>বাজারদর</em></h1>
-        <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলা</b> ও <b>${d.commoditiesWithData}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
+        <p class="lead">বাংলাদেশের <b>${d.districtCount}টি জেলার</b>${d.districtsWithData && d.districtsWithData < d.districtCount ? ` (সর্বশেষ প্রতিবেদনে <b>${d.districtsWithData}টিতে</b> তথ্য)` : ""} ও <b>${d.commoditiesWithData}টি পণ্যের</b> সরকারি খুচরা ও পাইকারি দর — প্রতিদিন, ইউনিট সংশোধিত, প্রতিটি সংখ্যার উৎস ও তারিখসহ।</p>
         <p class="stamp-note">সর্বশেষ সরকারি প্রতিবেদন: <strong>${esc(d.latestDate ?? "—")}</strong> · উৎস প্রতিদিন আগের দিনের হিসাব দেয়, তাই প্রতিটি উত্তরে তারিখ দেওয়া আছে।</p>
 
         <div class="lookup">
