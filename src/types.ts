@@ -128,4 +128,10 @@ export interface Env {
    * the legal permission to sell the service and it does not exist yet.
    */
   LICENCE_GRANTED?: string;
+  /**
+   * The IndexNow key. A secret, not a variable, because the key file it
+   * protects is served from the root of the host and anyone who knows the
+   * key could ask a search engine to re-crawl our URLs.
+   */
+  INDEXNOW_KEY?: string;
 }

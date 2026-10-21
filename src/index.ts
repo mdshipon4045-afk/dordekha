@@ -373,6 +373,14 @@ export default {
       // ── Static-ish documents ────────────────────────────────────────────
       if (path === "/robots.txt") return robotsTxt(env);
       if (path === "/llms.txt") return llmsTxt(env);
+      // The IndexNow key file. The protocol requires the key to be
+      // fetchable from the root of the host; the key itself is a secret,
+      // so the file is served by the Worker rather than committed.
+      if (env.INDEXNOW_KEY && path === `/${env.INDEXNOW_KEY}.txt`) {
+        return new Response(env.INDEXNOW_KEY, {
+          headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=86400" },
+        });
+      }
       if (path === "/sitemap.xml") return sitemap(env, latest);
       if (path.startsWith("/sitemap-")) {
         const part = await sitemapPart(env, path.slice("/sitemap-".length), latest);

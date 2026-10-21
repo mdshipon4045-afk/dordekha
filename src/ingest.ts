@@ -37,8 +37,10 @@ import {
   upsertPrices,
   writeJob,
 } from "./db";
-import { getAggregates, setMasterSnapshot, toMasterSnapshot } from "./cache";
+import { getAggregates, getMasterSnapshot, getSnapshot, setMasterSnapshot, toMasterSnapshot } from "./cache";
 import { hasRequiredIndexes } from "./maintenance";
+import { notifyIndexNow } from "./indexnow";
+import { commoditySlug, districtSlug } from "./slug";
 import type { Env, MasterData, PriceRecord } from "./types";
 
 /**
@@ -493,6 +495,15 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
     } catch (err) {
       console.error("digest failed", err);
     }
+    // The pages for this date exist now, so the engines that accept
+    // IndexNow can be told about them.
+    try {
+      const { writeSnapshot } = await import("./cache");
+      await writeSnapshot(env);
+      await notifyNewUrls(env, current);
+    } catch (err) {
+      console.error("indexnow notification failed", err);
+    }
     job.dateIndex++;
     job.districtIndex = 0;
   }
@@ -602,6 +613,36 @@ async function backfillNational(env: Env, job: IngestJob): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * Tell the search engines that a day's pages now exist.
+ *
+ * A site with no external links is not found by being crawled. The
+ * engines that accept IndexNow put the URLs into their crawl queue at
+ * once. Google does not accept it — for Google the path is links and
+ * Search Console — so this is a floor, not the whole answer.
+ */
+async function notifyNewUrls(env: Env, priceDate: string): Promise<void> {
+  const [master, snapshot] = await Promise.all([getMasterSnapshot(env), getSnapshot(env)]);
+  if (!master || !snapshot) return;
+
+  const origin = env.SITE_ORIGIN.replace(/\/$/, "");
+  const urls: string[] = [];
+  for (const row of snapshot.rows) {
+    if (row.t !== priceDate) continue;
+    const c = master.commodities.find((x) => x.id === row.c);
+    const d = master.districts.find((x) => x.id === row.d);
+    if (!c || !d) continue;
+    urls.push(
+      `${origin}/price/${commoditySlug(c.nameBn, c.nameEn, c.id)}/${districtSlug(d.nameBn, d.nameEn, d.id)}/${priceDate}`,
+    );
+  }
+  if (urls.length === 0) return;
+  const result = await notifyIndexNow(env, urls);
+  console.log(
+    `indexnow: ${result.sent ? "sent" : "not sent"} ${result.count} URLs for ${priceDate} (${result.status})`,
+  );
 }
 
 /**
