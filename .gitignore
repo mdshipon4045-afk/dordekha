@@ -3,6 +3,8 @@ node_modules/
 dist/
 .dev.vars
 *.log
+*.sql
+!migrations/*.sql
 .DS_Store
 .env
 .env.*
