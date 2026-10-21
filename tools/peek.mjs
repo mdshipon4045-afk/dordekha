@@ -15,8 +15,9 @@ const checks = [
   ["footer", "/", (t) => t.includes("foot-grid")],
   ["canonical", "/", (t) => t.includes('rel="canonical"')],
   ["JSON-LD Dataset", "/", (t) => t.includes('"@type":"Dataset"')],
-  ["fact page", "/price/onion-new-833/dhaka/2026-10-19", (t) => norm(t).includes("পেঁয়াজ")],
-  ["fact page json", "/price/onion-new-833/dhaka/2026-10-19.json", (t) => norm(t).includes("পেঁয়াজ")],
+  ["fact page", "/price/onion-new-833/dhaka/2026-10-19", (t) => norm(t).includes(norm("পেঁয়াজ"))],
+  ["fact page json", "/price/onion-new-833/dhaka/2026-10-19.json", (t) => norm(t).includes(norm("পেঁয়াজ"))],
+  ["no date fabrication", "/price/onion-new-833/dhaka/2020-01-01", (t) => t.includes("তারিখে কোনো তথ্য নেই")],
 ];
 
 (async () => {
