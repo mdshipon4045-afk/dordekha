@@ -153,7 +153,10 @@ for (const r of pl) {
     wmin: num(r[idx("wholesale_min")]),
     wmax: num(r[idx("wholesale_max")]),
     wavg: num(r[idx("wholesale_avg")]),
-    wu: wholesaleUnit ?? retailUnit,
+    // The wholesale figure has been divided down to the retail unit, so the
+    // retail unit is the unit it is in. The upstream's own unit is kept
+    // separately for audit.
+    wu: retailUnit,
     cf: Number(r[idx("carried_forward")]) === 1 ? 1 : 0,
     an: r[idx("anomaly")] && r[idx("anomaly")] !== "NULL" ? r[idx("anomaly")] : null,
   });
@@ -197,7 +200,7 @@ const historyRows = [];
       wmin: num(r[hi("wholesale_min")]),
       wmax: num(r[hi("wholesale_max")]),
       wavg: num(r[hi("wholesale_avg")]),
-      wu: wu ?? ru,
+      wu: ru,
       cf: Number(r[hi("carried_forward")]) === 1 ? 1 : 0,
     });
   }

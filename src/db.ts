@@ -28,7 +28,17 @@ function snapshotToRow(r: SnapshotRow): PriceRowOut {
     wholesale:
       r.wavg === null
         ? null
-        : { min: r.wmin, max: r.wmax, avg: r.wavg, unit: r.wu, rawUnit: r.wu, divisor: 100, divisorSource: "table" },
+        : {
+            min: r.wmin,
+            max: r.wmax,
+            avg: r.wavg,
+            // The value is in the commodity's retail unit, so that is the only
+            // honest label. The upstream's own unit is kept for audit.
+            unit: r.ru,
+            rawUnit: r.wu,
+            divisor: 100,
+            divisorSource: "table",
+          },
     carriedForward: r.cf === 1,
     anomaly: r.an,
   };

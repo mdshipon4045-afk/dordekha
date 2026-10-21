@@ -19,7 +19,16 @@
  * assistant that uses our data sends the reader to us.
  */
 
-import { latestForCommodity, latestForDistrict, historyFor, latestDate, commodityCoverageOrSnapshot } from "./db";
+import {
+  commodityCoverageOrSnapshot,
+  commodityRefs,
+  districtRefs,
+  historyForOrSnapshot,
+  latestForCommodityOrSnapshot,
+  latestForDistrictOrSnapshot,
+  unitNames,
+} from "./db";
+import { getAggregates } from "./cache";
 import { formatBdt } from "./normalize";
 import { matchScore, foldForCompare, bnIncludes, toAsciiDigits } from "./bn";
 import { resolve, findInText, rankByCoverage, type Resolution, type Resolvable } from "./resolve";
@@ -132,25 +141,26 @@ interface DistrictRef {
 }
 
 async function loadRefs(env: Env): Promise<{ commodities: CommodityRef[]; districts: DistrictRef[]; groups: Map<number, string> }> {
-  const { results: cs } = await env.DB.prepare(`SELECT id, name_bn, name_en, group_id FROM commodity`).all();
-  const { results: ds } = await env.DB.prepare(`SELECT id, name_bn, name_en FROM district`).all();
-  const { results: gs } = await env.DB.prepare(`SELECT id, name_bn FROM commodity_group`).all();
+  // The reference lists come from the cache when the database cannot be read.
+  const refs = await commodityRefs(env);
+  const drefs = await districtRefs(env);
   const groups = new Map<number, string>();
-  for (const g of gs ?? []) groups.set(Number((g as Record<string, unknown>).id), String((g as Record<string, unknown>).name_bn ?? ""));
+  for (const c of refs) if (c.groupBn) groups.set(c.groupId, c.groupBn);
 
-  const commodities: CommodityRef[] = (cs ?? []).map((c) => {
-    const r = c as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return { id: Number(r.id), nameBn: bn, nameEn: en, slug: commoditySlug(bn, en, Number(r.id)), groupBn: groups.get(Number(r.group_id)) ?? "" };
-  });
+  const commodities: CommodityRef[] = refs.map((c) => ({
+    id: c.id,
+    nameBn: c.nameBn,
+    nameEn: c.nameEn,
+    slug: commoditySlug(c.nameBn, c.nameEn, c.id),
+    groupBn: c.groupBn,
+  }));
 
-  const districts: DistrictRef[] = (ds ?? []).map((d) => {
-    const r = d as Record<string, unknown>;
-    const bn = String(r.name_bn ?? "");
-    const en = String(r.name_en ?? "");
-    return { id: Number(r.id), nameBn: bn, nameEn: en, slug: districtSlug(bn, en, Number(r.id)) };
-  });
+  const districts: DistrictRef[] = drefs.map((d) => ({
+    id: d.id,
+    nameBn: d.nameBn,
+    nameEn: d.nameEn,
+    slug: districtSlug(d.nameBn, d.nameEn, d.id),
+  }));
 
   return { commodities, districts, groups };
 }
@@ -165,11 +175,8 @@ function matchDistrict(list: DistrictRef[], q: string): DistrictRef | null {
 
 async function unitLabel(env: Env, unitId: number | null): Promise<{ bn: string; en: string }> {
   if (!unitId) return { bn: "কেজি", en: "kg" };
-  const row = await env.DB.prepare(`SELECT name_bn, name_en FROM unit WHERE id = ?`).bind(unitId).first<{
-    name_bn: string | null;
-    name_en: string | null;
-  }>();
-  return { bn: row?.name_bn ?? "কেজি", en: row?.name_en ?? "kg" };
+  const names = await unitNames(env);
+  return { bn: names.get(unitId) ?? "কেজি", en: "kg" };
 }
 
 function ok(id: string | number | null | undefined, result: unknown): Response {
@@ -323,10 +330,10 @@ async function getMarketPrice(
 ): Promise<{ resultType: string; content: { type: string; text: string }[]; structuredContent: unknown }> {
   const commodity = cRes.match!;
   const district = dRes.match!;
-  const rows = await latestForDistrict(env.DB, district.id, 1000);
+  const rows = await latestForDistrictOrSnapshot(env, district.id, 1000);
   const row = rows.find((r) => r.commodityId === commodity.id);
   if (!row || !row.retail) {
-    const latest = await latestDate(env.DB);
+    const latest = (await getAggregates(env)).latestDate;
     throw new Error(
       `No published price for ${commodity.nameBn} in ${district.nameBn} on the latest report date (${latest ?? "unknown"}). The district may not have submitted figures for that day.`,
     );
@@ -406,7 +413,7 @@ async function compareDistricts(
   priceType: "retail" | "wholesale",
 ): Promise<{ resultType: string; content: { type: string; text: string }[]; structuredContent: unknown }> {
   const commodity = cRes.match!;
-  const rows = await latestForCommodity(env.DB, commodity.id, 200);
+  const rows = await latestForCommodityOrSnapshot(env, commodity.id, 200);
   const withValue = rows
     .map((r) => ({ row: r, value: priceType === "retail" ? r.retail?.avg : r.wholesale?.avg }))
     .filter((x): x is { row: (typeof rows)[number]; value: number } => typeof x.value === "number");
@@ -423,8 +430,8 @@ async function compareDistricts(
   const avg = withValue.reduce((s, x) => s + x.value, 0) / withValue.length;
 
   const nameOf = async (districtId: number): Promise<string> => {
-    const d = await env.DB.prepare(`SELECT name_bn FROM district WHERE id = ?`).bind(districtId).first<{ name_bn: string }>();
-    return d?.name_bn ?? String(districtId);
+    const drefs = await districtRefs(env);
+    return drefs.find((d) => d.id === districtId)?.nameBn ?? String(districtId);
   };
 
   const cheapestName = await nameOf(cheapest.row.districtId);
@@ -468,7 +475,7 @@ async function getTrend(
   days: number,
 ): Promise<{ resultType: string; content: { type: string; text: string }[]; structuredContent: unknown }> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-  const history = await historyFor(env.DB, commodity.id, district.id, since, days + 10);
+  const history = await historyForOrSnapshot(env, commodity.id, district.id, since, days + 10);
   const ordered = history.slice().reverse();
   if (ordered.length === 0) throw new Error(`No history for ${commodity.nameBn} in ${district.nameBn}.`);
 
@@ -543,7 +550,7 @@ async function verifyClaim(
     );
   }
 
-  const rows = await latestForCommodity(env.DB, commodity.id, 200);
+  const rows = await latestForCommodityOrSnapshot(env, commodity.id, 200);
   const candidates = district ? rows.filter((r) => r.districtId === district.id) : rows;
 
   if (candidates.length === 0 || !candidates[0]?.retail) {
