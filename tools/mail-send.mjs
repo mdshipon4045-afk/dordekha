@@ -7,7 +7,7 @@
  * later carry, so the first contact is already on our own domain.
  *
  *   node tools/mail-send.mjs verify
- *   node tools/mail-send.mjs send <to> <subject> <file-with-the-body> [attachment]
+ *   node tools/mail-send.mjs send <to> <subject> <file-with-the-body> [attachment] [cc]
  *
  * Nothing is sent without an explicit `send`, and the body is read from a
  * file so that what is sent is exactly what was reviewed.
@@ -48,9 +48,9 @@ if (command === "verify") {
     process.exitCode = 1;
   }
 } else if (command === "send") {
-  const [to, subject, bodyFile, attachment] = rest;
+  const [to, subject, bodyFile, attachment, cc] = rest;
   if (!to || !subject || !bodyFile) {
-    console.log("usage: node tools/mail-send.mjs send <to> <subject> <body-file> [attachment]");
+    console.log("usage: node tools/mail-send.mjs send <to> <subject> <body-file> [attachment] [cc]");
     process.exitCode = 2;
   } else {
     const body = readFileSync(bodyFile, "utf8");
@@ -60,11 +60,14 @@ if (command === "verify") {
       subject,
       text: body,
     };
+    if (cc) message.cc = cc;
     if (attachment) {
       message.attachments = [{ filename: attachment.split(/[\\/]/).pop(), path: attachment }];
     }
     const info = await transport.sendMail(message);
-    console.log(`sent: ${info.messageId} → ${to}`);
+    console.log(`sent: ${info.messageId}`);
+    console.log(`  to: ${to}${cc ? `  cc: ${cc}` : ""}`);
+    console.log(`  subject: ${subject}`);
   }
 } else {
   console.log("usage: node tools/mail-send.mjs verify | send <to> <subject> <body-file> [attachment]");
