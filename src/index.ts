@@ -40,7 +40,7 @@ import { formatBdt } from "./normalize";
 import { extractKeywords, foldForCompare } from "./bn";
 import { candidatesFor, pickByCoverage, resolve } from "./resolve";
 import { refreshMaster, startIngest, stepIngest, buildDigestInput, cronTick } from "./ingest";
-import { ensureSchema, maintenanceState } from "./maintenance";
+import { ensureSchema, maintenanceState, missingIndexes } from "./maintenance";
 import {
   currentPeriod,
   disableLicense,
@@ -153,7 +153,12 @@ function json(data: unknown, ctx: RenderContext, status = 200): Response {
   return withCommonHeaders(
     new Response(JSON.stringify(data, null, 2), {
       status,
-      headers: { "Content-Type": JSON_T, "Cache-Control": "public, max-age=600" },
+      headers: {
+        "Content-Type": JSON_T,
+        // An error is not worth keeping. A broken answer that is cached
+        // for ten minutes is a broken answer for ten minutes.
+        "Cache-Control": status >= 400 ? "no-store" : "public, max-age=600",
+      },
     }),
     ctx,
   );
@@ -208,12 +213,35 @@ export default {
             { status: access.status, headers: { "content-type": "application/json" } },
           );
         }
-        const body = (await request.json()) as {
+        let body: {
           jsonrpc: "2.0";
           id?: string | number | null;
           method: string;
           params?: Record<string, unknown>;
         };
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          // A body that is not json is the caller's mistake, and it is
+          // answered with the json-rpc code for it - not with a 503 that
+          // says the service is down.
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32700, message: "Parse error: the body is not valid JSON" },
+            }),
+            {
+              status: 400,
+              headers: {
+                "content-type": "application/json",
+                "cache-control": "no-store",
+                "mcp-protocol-version": MCP_PROTOCOL_VERSION,
+                "access-control-allow-origin": "*",
+              },
+            },
+          );
+        }
         const res = await handleMcp(env, ctxR, body);
         const h = new Headers(res.headers);
         h.set("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
@@ -260,7 +288,8 @@ export default {
         }
         if (path === "/internal/health") {
           return json(
-            { ...(await ingestHealth(env.DB)), maintenance: await maintenanceState(env) },
+            { ...(await ingestHealth(env.DB)), maintenance: await maintenanceState(env),
+              missing_indexes: await missingIndexes(env) },
             ctxR,
           );
         }
@@ -1801,12 +1830,25 @@ async function datasetStats(env: Env): Promise<DatasetStats> {
     }
   }
 
+  // The upazilas that have prices. The catalogue count above says how many
+  // the source knows; this says how many it has reported on.
+  let upazilasWithData = 0;
+  try {
+    const u = await env.DB
+      .prepare(`SELECT COUNT(DISTINCT upazila_id) AS c FROM price_latest WHERE upazila_id > 0`)
+      .first<{ c: number }>();
+    upazilasWithData = u?.c ?? 0;
+  } catch {
+    upazilasWithData = 0;
+  }
+
   return {
     commodities: agg.commodityCount,
     commoditiesWithData: agg.commoditiesWithData,
     districts: agg.districtCount,
     districtsWithData: agg.districtsWithData,
     upazilas,
+    upazilasWithData,
     days: agg.days,
     rows: agg.rowCount,
     carriedPct: agg.carriedPct,

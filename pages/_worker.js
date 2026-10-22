@@ -52,6 +52,13 @@ const FORWARD_RESPONSE_HEADERS = [
   "vary",
   "x-robots-tag",
   "content-signal",
+  // The mcp protocol version, the permission to call it from a browser,
+  // and the date the data is from.
+  "mcp-protocol-version",
+  "access-control-allow-origin",
+  "access-control-allow-headers",
+  "access-control-allow-methods",
+  "x-content-source-date",
 ];
 
 export default {

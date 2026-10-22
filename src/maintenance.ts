@@ -91,6 +91,14 @@ export interface MaintenanceResult {
   created: string[];
   /** Indexes that were already there. */
   present: string[];
+  /**
+   * Indexes the code needs and the database does not have.
+   *
+   * The list of what is there is a snapshot from the last run, so a
+   * reviewer reading it could be told an index was missing when it was
+   * created afterwards. This is the live answer.
+   */
+  missing?: string[];
   /** Columns this run added. */
   columnsAdded: string[];
   /** Indexes or columns that could not be created, with the reason. */
@@ -104,6 +112,23 @@ export interface MaintenanceResult {
  * districts, which is how the read budget gets spent. So the backfill waits
  * until they are there.
  */
+/** The indexes the code needs and the database does not have. */
+export async function missingIndexes(env: Env): Promise<string[]> {
+  const names = REQUIRED_INDEXES.map((i) => i.name);
+  const placeholders = names.map(() => "?").join(",");
+  try {
+    const { results } = await env.DB
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${placeholders})`)
+      .bind(...names)
+      .all<{ name: string }>();
+    const present = new Set((results ?? []).map((r) => String(r.name)));
+    return names.filter((n) => !present.has(n));
+  } catch {
+    // The catalogue cannot be read, so nothing can be said about it.
+    return [];
+  }
+}
+
 export async function hasRequiredIndexes(env: Env): Promise<boolean> {
   const names = REQUIRED_INDEXES.map((i) => i.name);
   const placeholders = names.map(() => "?").join(",");

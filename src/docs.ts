@@ -261,6 +261,14 @@ export interface DatasetStats {
   districtsWithData: number;
   /** How many upazilas the source exposes. */
   upazilas: number;
+  /**
+   * How many upazilas have published prices.
+   *
+   * The catalogue holds upazilas; the data does not yet. A page that says
+   * "upazila-level data is published" because the catalogue has entries is
+   * making a claim it cannot back up.
+   */
+  upazilasWithData: number;
   /** How many report days are held. */
   days: number;
   /** How many rows are held. */
@@ -305,7 +313,7 @@ export function datasetDoc(stats: DatasetStats, ctx: RenderContext): Doc {
           [
             "উপজেলা",
             bnNum(stats.upazilas),
-            stats.upazilas > 0
+            stats.upazilasWithData > 0
               ? "উপজেলা-ভিত্তিক তথ্য প্রকাশ করা হচ্ছে"
               : "উপজেলা-ভিত্তিক তথ্য এখনো প্রকাশ করা হয়নি",
           ],
