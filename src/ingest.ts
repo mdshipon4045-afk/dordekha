@@ -298,8 +298,18 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
     return { action: "step", job: await advance(env, existing) };
   }
 
+  // The daily refresh comes first. A site that shows an old price is
+  // broken, while a site that reaches back fewer days is merely short.
+  //
+  // The question is when the last refresh ran, not how old the newest
+  // figure is: the upstream does not publish every day, and a site that
+  // waited for a figure that is not coming would never refresh at all.
+  if (await dailyRefreshDue(env)) {
+    return { action: "started", job: await startIngest(env) };
+  }
+
   // The history claim on the site has to be true, so when it is thinner than
-  // it should be, a backfill runs before the daily refresh.
+  // it should be, a backfill runs.
   const decision = await historyDecision(env);
   if (decision.kind === "wait-for-index") {
     // A backfill without the indexes reads the whole price table for every
@@ -309,12 +319,6 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
   if (decision.kind === "thin" && !(await backfillPaused(env))) {
     console.log(`history is ${decision.days} days — starting a backfill`);
     return { action: "backfill", job: await startBackfill(env) };
-  }
-  // No job running. Decide whether a daily refresh is due.
-  const last = await lastCompletedReport(env.DB);
-  const age = last ? Date.now() - Date.parse(last) : Number.POSITIVE_INFINITY;
-  if (age > REFRESH_AFTER_MS) {
-    return { action: "started", job: await startIngest(env) };
   }
   return { action: "idle" };
 }
@@ -367,7 +371,9 @@ export async function startBackfill(env: Env): Promise<IngestJob> {
 async function collectedDates(db: D1Database): Promise<string[]> {
   try {
     const { results } = await db
-      .prepare(`SELECT DISTINCT price_date AS d FROM ingest_run WHERE scope = 'district'`)
+      .prepare(
+        `SELECT DISTINCT price_date AS d FROM ingest_run WHERE scope IN ('district', 'backfill')`,
+      )
       .all<{ d: string }>();
     return (results ?? []).map((r) => r.d).filter((d) => typeof d === "string" && d.length > 0);
   } catch {
@@ -387,6 +393,10 @@ async function collectedDates(db: D1Database): Promise<string[]> {
  */
 async function dailyRefreshDue(env: Env): Promise<boolean> {
   try {
+    const at = await lastSweepFinishedAt(env.DB);
+    if (at) return Date.now() - Date.parse(at) > REFRESH_AFTER_MS;
+    // No sweep has been recorded, so the newest figure is the only answer
+    // there is.
     const last = await lastCompletedReport(env.DB);
     if (!last) return true;
     return Date.now() - Date.parse(last) > REFRESH_AFTER_MS;
@@ -394,6 +404,19 @@ async function dailyRefreshDue(env: Env): Promise<boolean> {
     // The question could not be answered, so the backfill carries on.
     return false;
   }
+}
+
+/**
+ * When the last daily sweep finished.
+ *
+ * The backfill is a sweep too, so it is recorded under its own name and does
+ * not make the daily refresh look fresh.
+ */
+async function lastSweepFinishedAt(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT MAX(finished_at) AS at FROM ingest_run WHERE scope = 'district'`)
+    .first<{ at: string | null }>();
+  return row?.at ?? null;
 }
 
 /** Drop anything older than the history window. */
@@ -555,7 +578,10 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
   if (job.districtIndex >= job.districts.length) {
     await recordIngestRun(env.DB, {
       priceDate: current,
-      scope: "district",
+      // The backfill is a sweep of its own. Recording it as a daily sweep
+      // would make the daily refresh look fresh for as long as the backfill
+      // runs, and the site would never see yesterday's price again.
+      scope: job.kind === "backfill" ? "backfill" : "district",
       startedAt,
       finishedAt: new Date().toISOString(),
       rowsWritten: records.length,

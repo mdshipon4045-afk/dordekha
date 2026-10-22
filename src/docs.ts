@@ -364,7 +364,7 @@ export function methodologyDoc(stats: DatasetStats, ctx: RenderContext): Doc {
   const carried =
     stats.carriedPct === null
       ? "হিসাব করা যায়নি"
-      : `সর্বশেষ দিনের (${stats.latestDate ?? "—"}) মোট ${bnNum(stats.rows)} সারির মধ্যে ${bnNum(stats.carriedPct)}% আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে`;
+      : `সর্বশেষ দিনের (${stats.latestDate ?? "—"}) সারির মধ্যে ${bnNum(stats.carriedPct)}% আগের দিনের মান পুনরায় ব্যবহার করা হয়েছে`;
 
   const unitRows = stats.units.map((u) => [String(u.id), u.name_bn, u.name_en]);
 

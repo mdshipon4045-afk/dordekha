@@ -422,6 +422,15 @@ export interface HistoryDay {
   date: string;
   /** The districts that reported on that day. */
   districts: number[];
+  /**
+   * The rows each district holds.
+   *
+   * The ingest writes a day four districts at a time, so a day that is
+   * counted as it arrives would only ever hold the last batch. The count
+   * per district is kept so that a day written again replaces its own
+   * districts' figures instead of adding to them.
+   */
+  rowCounts: Record<string, number>;
   rows: number;
 }
 
@@ -464,8 +473,11 @@ export async function setHistoryDate(env: Env, date: string, rows: HistoryRow[])
   }
 
   const districts = [...new Set([...(previous?.districts ?? []), ...byDistrict.keys()])].sort((a, b) => a - b);
+  const rowCounts = { ...(previous?.rowCounts ?? {}) };
+  for (const [district, districtRows] of byDistrict) rowCounts[String(district)] = districtRows.length;
+  const total = Object.values(rowCounts).reduce((n, r) => n + r, 0);
   const days = manifest.days.filter((d) => d.date !== date);
-  days.push({ date, districts, rows: rows.length });
+  days.push({ date, districts, rowCounts, rows: total });
   days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   await kvSet(env, HISTORY_INDEX_KEY, { days, updatedAt: new Date().toISOString() }, SNAPSHOT_TTL);
 }

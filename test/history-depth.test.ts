@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setHistoryDate, type HistoryRow } from "../src/cache";
 import { historyForOrSnapshot } from "../src/db";
-import { advance, startBackfill } from "../src/ingest";
+import { advance, cronTick, startBackfill } from "../src/ingest";
 import type { Env, MasterData } from "../src/types";
 import { fakeD1, fakeKV } from "./helpers/fake-env";
 
@@ -172,6 +172,28 @@ describe("the trend reaches the whole history", () => {
 });
 
 describe("the backfill", () => {
+  it("lets the daily refresh come first when the history is thin", async () => {
+    // The history is thinner than it should be, so a backfill wants to
+    // start. The daily price comes first: a site that shows an old price is
+    // broken, while a site that reaches back fewer days is merely short.
+    stubUpstream();
+    const d1 = fakeD1([
+      // The last daily sweep finished three days ago, so the refresh is due.
+      (sql) => (sql.includes("MAX(finished_at)") ? { results: [{ at: "2026-10-19T00:00:00Z" }] } : null),
+      (sql) =>
+        sql.includes("FROM price_daily")
+          ? { results: [{ first: "2026-06-23", last: "2026-10-19", days: 3 }] }
+          : null,
+    ]);
+    const kv = fakeKV({ "agg:current": { days: 3 }, "ingest:master": master([47]) });
+    const env = envWith(d1, kv);
+
+    const result = await cronTick(env);
+
+    expect(result.action).toBe("started");
+    expect(result.action).not.toBe("backfill");
+  });
+
   it("collects only the days it does not have", async () => {
     stubUpstream();
     const d1 = fakeD1([
