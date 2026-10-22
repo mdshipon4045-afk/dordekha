@@ -50,6 +50,14 @@ export const REQUIRED_INDEXES: RequiredIndex[] = [
     name: "idx_ingest_scope",
     sql: "CREATE INDEX IF NOT EXISTS idx_ingest_scope ON ingest_run(scope, status, price_date)",
   },
+  {
+    // Migration 0005. The sweep asks for the previous values of a few
+    // districts, and without this the answer was found by walking every row
+    // a district has: about fifty thousand rows for every batch of four
+    // districts, which is the whole daily read budget in two hours.
+    name: "idx_pd_district_date",
+    sql: "CREATE INDEX IF NOT EXISTS idx_pd_district_date ON price_daily(district_id, price_date)",
+  },
 ];
 
 const STATE_KEY = "maintenance:schema";

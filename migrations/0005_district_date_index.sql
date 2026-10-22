@@ -1,0 +1,12 @@
+-- The index the backfill needs to be cheap.
+--
+-- The sweep asks for the previous values of a few districts: "the last day
+-- before this one, for these districts". Written as a correlated subquery,
+-- SQLite answered that by walking every row a district has — with a
+-- hundred days of history that is ten thousand rows per district, and four
+-- districts per batch. The backfill read about fifty thousand rows for
+-- every batch, which is the whole daily read budget in two hours.
+--
+-- With (district_id, price_date) the same question is one seek: the
+-- district, then the newest day before the one asked for.
+CREATE INDEX IF NOT EXISTS idx_pd_district_date ON price_daily(district_id, price_date);

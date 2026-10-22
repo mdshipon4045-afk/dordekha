@@ -752,12 +752,16 @@ export async function previousValuesForDistricts(
       `SELECT p.district_id AS district_id, p.commodity_id AS commodity_id,
               p.retail_avg AS retail_avg, p.wholesale_avg AS wholesale_avg
          FROM price_daily p
-        WHERE p.upazila_id = 0
-          AND p.district_id IN (${placeholders})
-          AND p.price_date = (SELECT MAX(q.price_date) FROM price_daily q
-                               WHERE q.district_id = p.district_id
-                                 AND q.upazila_id = 0
-                                 AND q.price_date < ?)`,
+         JOIN (
+           SELECT district_id, MAX(price_date) AS price_date
+             FROM price_daily
+            WHERE district_id IN (${placeholders})
+              AND upazila_id = 0
+              AND price_date < ?
+            GROUP BY district_id
+         ) prev
+           ON prev.district_id = p.district_id AND prev.price_date = p.price_date
+        WHERE p.upazila_id = 0`,
     )
     .bind(...districtIds, beforeDate)
     .all();

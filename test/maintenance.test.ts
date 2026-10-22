@@ -161,16 +161,20 @@ describe("the worker keeps its own indexes", () => {
 });
 
 describe("the index list and the migration file cannot drift apart", () => {
-  it("matches migration 0004 exactly", () => {
-    const sql = readFileSync(resolve(process.cwd(), "migrations", "0004_indexes.sql"), "utf8");
-    const fromFile = [...sql.matchAll(/CREATE INDEX IF NOT EXISTS\s+(\w+)/gi)].map((m) => m[1]!);
-    expect(fromFile.length).toBeGreaterThan(0);
-    expect(REQUIRED_INDEXES.map((i) => i.name).sort()).toEqual(fromFile.sort());
+  it("matches the migration files exactly", () => {
+    const files = ["migrations/0004_indexes.sql", "migrations/0005_district_date_index.sql"];
+    const fromFiles = files.flatMap((file) => {
+      const sql = readFileSync(resolve(process.cwd(), file), "utf8");
+      return [...sql.matchAll(/CREATE INDEX IF NOT EXISTS\s+(\w+)/gi)].map((m) => m[1]!);
+    });
+    expect(fromFiles.length).toBeGreaterThan(0);
+    expect(REQUIRED_INDEXES.map((i) => i.name).sort()).toEqual(fromFiles.sort());
 
     // Whitespace is not a difference in meaning.
     const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+    const all = files.map((file) => readFileSync(resolve(process.cwd(), file), "utf8")).join("\n");
     for (const index of REQUIRED_INDEXES) {
-      expect(norm(sql)).toContain(norm(index.sql));
+      expect(norm(all)).toContain(norm(index.sql));
     }
   });
 });
