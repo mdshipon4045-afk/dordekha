@@ -219,11 +219,35 @@ export async function historyForOrSnapshot(
   // keeps the trend tool from reading the whole price table.
   const cached = await getHistoryRows(env, commodityId, districtId);
   if (cached.length > 0) {
-    return cached
+    const fromCache = cached
       .filter((r) => r.t >= sinceDate)
       .sort((a, b) => (a.t < b.t ? 1 : -1))
       .slice(0, limit)
       .map(historyRowToOut);
+
+    // The cache holds the recent days only. A shard lives two days, and the
+    // free tier holds a thousand keys, so the whole history cannot live
+    // there - the database holds it. A request that reaches further back
+    // than the cache does is completed from the database, or the site would
+    // claim a hundred days of history and serve two.
+    const oldest = fromCache.length ? fromCache[fromCache.length - 1]!.priceDate : null;
+    if (oldest && oldest > sinceDate) {
+      try {
+        const fromDb = await historyFor(env.DB, commodityId, districtId, sinceDate, limit);
+        if (fromDb.length > 0) {
+          // The database is the truth for the older days. The cache may hold
+          // a day the database has not written yet, so nothing is dropped.
+          const known = new Set(fromDb.map((r) => r.priceDate));
+          const extra = fromCache.filter((r) => !known.has(r.priceDate));
+          return [...fromDb, ...extra]
+            .sort((a, b) => (a.priceDate < b.priceDate ? 1 : -1))
+            .slice(0, limit);
+        }
+      } catch {
+        /* the cache is still a truthful answer */
+      }
+    }
+    return fromCache;
   }
   try {
     return await historyFor(env.DB, commodityId, districtId, sinceDate, limit);

@@ -16,7 +16,7 @@
 import { execFileSync } from "node:child_process";
 
 const REPO = "dordekha";
-const TAG = "v1.0.0";
+const TAG = process.argv[3] ?? "v1.0.0";
 const API = "https://api.github.com";
 
 /** The credential for one GitHub account, from Git Credential Manager. */

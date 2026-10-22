@@ -327,8 +327,15 @@ export async function cronTick(env: Env): Promise<{ action: string; job?: Ingest
  */
 export async function startBackfill(env: Env): Promise<IngestJob> {
   const master = await getMaster(env);
-  const dates = await findDatesWithData(env, HISTORY_DAYS);
-  console.log(`backfill: ${dates.length} dates to collect`);
+  const calendar = await findDatesWithData(env, HISTORY_DAYS);
+
+  // The days that are already collected are not collected again. A backfill
+  // that started from the oldest day every time would spend the whole daily
+  // write budget on days it already has, and would never reach the ones it
+  // does not have.
+  const have = new Set(await collectedDates(env.DB));
+  const dates = calendar.filter((d) => !have.has(d));
+  console.log(`backfill: ${dates.length} dates to collect (${have.size} already held)`);
 
   const job: IngestJob = {
     id: `backfill_${Date.now().toString(36)}`,
@@ -348,6 +355,45 @@ export async function startBackfill(env: Env): Promise<IngestJob> {
 
   await writeJob(env.DB, job);
   return advance(env, job);
+}
+
+/**
+ * The days a district sweep has already collected.
+ *
+ * The run table is small and it says which days finished, so this costs one
+ * small read. The price table says the same thing, but it grows with the
+ * history and counting it costs rows.
+ */
+async function collectedDates(db: D1Database): Promise<string[]> {
+  try {
+    const { results } = await db
+      .prepare(`SELECT DISTINCT price_date AS d FROM ingest_run WHERE scope = 'district'`)
+      .all<{ d: string }>();
+    return (results ?? []).map((r) => r.d).filter((d) => typeof d === "string" && d.length > 0);
+  } catch {
+    // Without the list the backfill would collect days it already has. That
+    // wastes the budget, so it waits for a day it can read.
+    return [];
+  }
+}
+
+/**
+ * Is the daily refresh due?
+ *
+ * The newest completed report is old enough that yesterday's figures should
+ * have arrived by now. The backfill asks this between days: a site that
+ * shows an old price is broken, while a site that reaches back fewer days
+ * is merely short.
+ */
+async function dailyRefreshDue(env: Env): Promise<boolean> {
+  try {
+    const last = await lastCompletedReport(env.DB);
+    if (!last) return true;
+    return Date.now() - Date.parse(last) > REFRESH_AFTER_MS;
+  } catch {
+    // The question could not be answered, so the backfill carries on.
+    return false;
+  }
 }
 
 /** Drop anything older than the history window. */
@@ -545,6 +591,18 @@ export async function advance(env: Env, job: IngestJob): Promise<IngestJob> {
     }
     job.dateIndex++;
     job.districtIndex = 0;
+
+    // The daily refresh comes first. A backfill that runs for days would
+    // otherwise keep the site waiting for yesterday's price, and the price
+    // is the promise the site makes. The backfill picks up where it left
+    // off afterwards, because it no longer collects the days it already has.
+    if (job.kind === "backfill" && (await dailyRefreshDue(env))) {
+      job.status = "done";
+      job.error = "the daily refresh took over";
+      await writeJob(env.DB, job);
+      console.log("backfill paused: the daily refresh is due");
+      return job;
+    }
   }
 
   if (job.dateIndex >= job.priceDates.length) {
