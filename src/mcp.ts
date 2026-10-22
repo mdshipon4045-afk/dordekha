@@ -580,7 +580,7 @@ async function getTrend(
  * lookup table: an assistant can check itself instead of asserting a price
  * from memory.
  */
-async function verifyClaim(
+export async function verifyClaim(
   env: Env,
   ctx: RenderContext,
   commodities: CommodityRef[],
@@ -659,14 +659,15 @@ async function verifyClaim(
       ? actualMin <= claimedValue && claimedValue <= actualMax
       : null;
 
-  const matches =
-    claimedValue === null
-      ? null
-      : range === true
-        ? true
-        : actual !== null && actualMin !== null && actualMax !== null
-          ? claimedValue >= actualMin * 0.9 && claimedValue <= actualMax * 1.1
-          : false;
+  // "matches" has to mean the same thing the verdict says, because a
+  // machine that reads the field and never reads the text must not get a
+  // different answer. So it means: the claim falls inside the published
+  // range. The tolerance is a different question and gets its own name.
+  const withinTolerance =
+    claimedValue !== null && actual !== null && actualMin !== null && actualMax !== null
+      ? claimedValue >= actualMin * 0.9 && claimedValue <= actualMax * 1.1
+      : null;
+  const matches = claimedValue === null ? null : range === true;
 
   const otherVarieties = checked
     .filter((c) => c.commodity.id !== primary.commodity.id)
@@ -708,6 +709,9 @@ async function verifyClaim(
       text,
       verdict,
       matches,
+      // Within ten per cent of the published range, but outside it. A
+      // separate answer, so it cannot be mistaken for the verdict.
+      within_tolerance: withinTolerance,
       claimed_value: claimedValue,
       actual: { min: actualMin, max: actualMax, avg: actual },
       unit_bn: await unitLabel(env, row.retail!.unit).then((u) => u.bn),
