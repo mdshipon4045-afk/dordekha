@@ -27,6 +27,7 @@ import {
 import {
   getAggregates,
   getSnapshot,
+  recountHistory,
   refreshAggregates,
   setAggregates,
   setHistorySnapshot,
@@ -265,6 +266,14 @@ export default {
         if (path === "/internal/maintenance") {
           const result = await ensureSchema(env);
           return json(result, ctxR);
+        }
+        if (path === "/internal/claims/refresh") {
+          // The numbers the site states are cached, so they can be a little
+          // behind the data. This recomputes them from the cache alone, so it
+          // works even when the read budget is spent.
+          const recounted = await recountHistory(env);
+          await refreshAggregates(env);
+          return json({ refreshed: true, recounted, ...(await getAggregates(env)) }, ctxR);
         }
         if (path === "/internal/license/create" && request.method === "POST") {
           try {

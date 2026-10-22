@@ -527,6 +527,37 @@ export async function getHistoryForDate(env: Env, date: string): Promise<History
   return legacy.rows.filter((r) => r.t === date);
 }
 
+/**
+ * Put the true row count back into the manifest.
+ *
+ * A day that was written before the count was fixed says only what the last
+ * batch wrote. The shards themselves hold the rows, so the count is read
+ * from them: one read per district per day, which the cache allows by the
+ * hundred thousand a day, and one write at the end.
+ */
+export async function recountHistory(env: Env): Promise<{ days: number; rows: number }> {
+  const manifest = await readManifest(env);
+  let total = 0;
+  for (const day of manifest.days) {
+    const rowCounts: Record<string, number> = {};
+    for (const district of day.districts) {
+      const shard = await kvGet<{ rows: HistoryRow[] }>(env, shardKey(day.date, district));
+      const rows = Array.isArray(shard?.rows) ? shard.rows.length : 0;
+      if (rows > 0) rowCounts[String(district)] = rows;
+    }
+    day.rowCounts = rowCounts;
+    day.rows = Object.values(rowCounts).reduce((n, r) => n + r, 0);
+    total += day.rows;
+  }
+  await kvSet(
+    env,
+    HISTORY_INDEX_KEY,
+    { days: manifest.days, updatedAt: new Date().toISOString() },
+    HISTORY_TTL,
+  );
+  return { days: manifest.days.length, rows: total };
+}
+
 /** How far back the history reaches, and how many rows it holds. */
 export async function getHistorySummary(env: Env): Promise<{ dates: string[]; rows: number }> {
   const manifest = await readManifest(env);
