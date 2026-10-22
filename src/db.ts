@@ -90,6 +90,88 @@ export async function latestForCommodityOrSnapshot(
 
 /* ── Reference data, with a cached fallback ─────────────────────────────── */
 
+/**
+ * The national picture of every commodity that has a price.
+ *
+ * The price index used to take Dhaka's figure for every commodity, so the
+ * three hundred and fifty commodities that Dhaka did not report showed an
+ * empty price — and the column said "average retail price", which is not
+ * what a district's figure is.
+ *
+ * This is the same number the answer for a commodity without a district
+ * gives: the median across the districts that reported, with the outliers
+ * left out. One statement for the whole list.
+ */
+export interface CommodityMedian {
+  /** The median retail price across the districts that reported. */
+  median: number;
+  /** The tenth and ninetieth percentile across them. */
+  low: number;
+  high: number;
+  /** How many districts reported. */
+  districts: number;
+  /** The unit the figures are in. */
+  unit: number | null;
+}
+
+export async function commodityMedians(env: Env): Promise<Map<number, CommodityMedian>> {
+  type Row = { c: number; avg: number; unit: number | null };
+  const rows: Row[] = [];
+
+  try {
+    const { results } = await env.DB
+      .prepare(
+        `SELECT commodity_id AS c, retail_avg AS avg, retail_unit AS unit
+           FROM price_latest
+          WHERE upazila_id = 0 AND district_id > 0 AND retail_avg IS NOT NULL`,
+      )
+      .all<Row>();
+    for (const r of results ?? []) {
+      rows.push({ c: Number(r.c), avg: Number(r.avg), unit: r.unit === null ? null : Number(r.unit) });
+    }
+  } catch {
+    // The read budget may be spent. The cache holds the same prices.
+  }
+
+  if (rows.length === 0) {
+    const snap = await getSnapshot(env);
+    for (const r of snap?.rows ?? []) {
+      if (r.ravg === null || r.ravg === undefined) continue;
+      rows.push({ c: r.c, avg: Number(r.ravg), unit: r.ru ?? null });
+    }
+  }
+
+  const byCommodity = new Map<number, number[]>();
+  const units = new Map<number, number | null>();
+  for (const r of rows) {
+    if (!Number.isFinite(r.avg)) continue;
+    const list = byCommodity.get(r.c) ?? [];
+    list.push(r.avg);
+    byCommodity.set(r.c, list);
+    if (units.get(r.c) === undefined) units.set(r.c, r.unit);
+  }
+
+  const out = new Map<number, CommodityMedian>();
+  for (const [commodityId, values] of byCommodity) {
+    const sorted = values.sort((a, b) => a - b);
+    if (sorted.length === 0) continue;
+    const median = sorted[Math.floor((sorted.length - 1) / 2)] ?? sorted[0]!;
+    // The upstream occasionally carries a figure that is off by two orders
+    // of magnitude, and one bad row must not define the figure.
+    const clean = sorted.filter((v) => v <= median * 3 && (median === 0 || v >= median / 3));
+    const use = clean.length > 0 ? clean : sorted;
+    out.set(commodityId, {
+      median: Math.round(median * 100) / 100,
+      low: Math.round(use[Math.floor(use.length * 0.1)]! * 100) / 100,
+      high: Math.round(use[Math.floor(use.length * 0.9)]! * 100) / 100,
+      districts: use.length,
+      unit: units.get(commodityId) ?? null,
+    });
+  }
+  return out;
+}
+
+
 export interface CommodityRef {
   id: number;
   nameBn: string;

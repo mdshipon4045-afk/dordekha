@@ -12,6 +12,7 @@
 import { handleMcp, MCP_PROTOCOL_VERSION } from "./mcp";
 import {
   commodityCoverageOrSnapshot,
+  commodityMedians,
   commodityRefs,
   districtRefs,
   historyForOrSnapshot,
@@ -572,16 +573,21 @@ async function homePage(
 
 async function priceIndex(env: Env, ctx: RenderContext, fmt: Format): Promise<Response> {
   const refs = await commodityRefs(env);
-  const dhaka = await latestForDistrictOrSnapshot(env, 47, 1000);
-  const byCommodity = new Map(dhaka.map((r) => [r.commodityId, r.retail?.avg ?? null]));
+  // The national figure for each commodity, not one district's. A district
+  // reports about ninety commodities, so taking Dhaka's figure for all of
+  // them left most of the list with an empty price.
+  const medians = await commodityMedians(env);
+  const units = await unitNames(env);
 
   const items: PriceIndexItem[] = refs.map((c) => ({
     bn: c.nameBn,
     en: c.nameEn,
     group: c.groupBn,
     slug: commoditySlug(c.nameBn, c.nameEn, c.id),
-    retailAvg: byCommodity.get(c.id) ?? null,
-    unitBn: "কেজি",
+    retailAvg: medians.get(c.id)?.median ?? null,
+    unitBn: (medians.get(c.id)?.unit ?? c.unitRetail) !== null
+      ? units.get(medians.get(c.id)?.unit ?? c.unitRetail ?? -1) ?? "kg"
+      : "kg",
   }));
 
   if (fmt === "json") return json({ count: items.length, commodities: items, source: SOURCE }, ctx);

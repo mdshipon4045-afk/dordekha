@@ -40,7 +40,16 @@ export function renderPriceIndexHtml(items: PriceIndexItem[], ctx: RenderContext
     groups.set(i.group, list);
   }
 
-  const sections = [...groups.entries()]
+  // The commodities that have a price come first in every group: a
+  // reader opening the list wants a price, and the ones the source does not
+  // report are still there, marked, at the end of their group.
+  for (const list of groups.values()) {
+    list.sort((a, b) => Number(b.retailAvg !== null) - Number(a.retailAvg !== null));
+  }
+
+  // The groups that have prices come first, for the same reason.
+  const pricedCount = (list: PriceIndexItem[]) => list.filter((i) => i.retailAvg !== null).length;
+  const sections = [...groups.entries()].sort((a, b) => pricedCount(b[1]) - pricedCount(a[1]))
     .map(
       ([group, list]) => `<div style="margin-top:30px">
       <div class="sec-head"><span class="sec-kicker">${esc(group)}</span><h2 style="font-size:22px">${list.length}টি পণ্য</h2></div>
@@ -52,7 +61,11 @@ export function renderPriceIndexHtml(items: PriceIndexItem[], ctx: RenderContext
               (i) => `<tr>
               <td class="c-item"><a href="/price/${esc(i.slug)}">${esc(i.bn)}</a></td>
               <td class="n" style="text-align:left;color:var(--faint);font-family:var(--font-mono);font-size:12.5px">${esc(i.en)}</td>
-              <td class="n">${esc(formatBdt(i.retailAvg))}</td>
+              <td class="n">${
+                i.retailAvg === null
+                  ? '<span style="color:var(--faint)">উৎসে এখনো তথ্য নেই</span>'
+                  : esc(formatBdt(i.retailAvg))
+              }</td>
               <td class="c-prov">${esc(i.unitBn)}</td>
             </tr>`,
             )
