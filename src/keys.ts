@@ -402,6 +402,12 @@ export async function issueLicense(env: Env, request: IssueRequest): Promise<Iss
     throw new LicenceError(`অজানা প্ল্যান: ${plan}`, 400);
   }
   const limits = planLimits(plan);
+  // The gate. It was there because a key that can be sold must not
+  // exist before the legal permission does. The owner decided, on the
+  // twenty-second of October, to work without waiting for that permission:
+  // the family covers any question that arises, and the letter is already
+  // with the office. So the switch is turned, and it stays a switch: turn
+  // it back and the commercial plans close again.
   if (limits.requiresLicence && env.LICENCE_GRANTED !== "1") {
     throw new LicenceError(
       "তথ্যের লাইসেন্স না আসা পর্যন্ত বাণিজ্যিক প্ল্যান দেওয়া যাবে না।",
