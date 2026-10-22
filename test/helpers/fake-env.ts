@@ -127,10 +127,13 @@ export interface FakeKV {
   kv: KVNamespace;
   store: Map<string, string>;
   get(key: string): string | undefined;
+  /** The lifetime each key was written with, in seconds. */
+  ttls: Map<string, number>;
 }
 
 export function fakeKV(initial: Record<string, unknown> = {}): FakeKV {
   const store = new Map<string, string>();
+  const ttls = new Map<string, number>();
   for (const [k, v] of Object.entries(initial)) {
     store.set(k, typeof v === "string" ? v : JSON.stringify(v));
   }
@@ -149,11 +152,13 @@ export function fakeKV(initial: Record<string, unknown> = {}): FakeKV {
       if (type === "arrayBuffer") return new TextEncoder().encode(raw).buffer;
       return raw;
     },
-    put: async (key: string, value: unknown) => {
+    put: async (key: string, value: unknown, options?: { expirationTtl?: number }) => {
       store.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      if (options?.expirationTtl) ttls.set(key, options.expirationTtl);
     },
     delete: async (key: string) => {
       store.delete(key);
+      ttls.delete(key);
     },
     list: async () => ({ keys: [], list_complete: true, cacheStatus: null }),
     getWithMetadata: async (key: string) => {
@@ -162,5 +167,5 @@ export function fakeKV(initial: Record<string, unknown> = {}): FakeKV {
     },
   } as unknown as KVNamespace;
 
-  return { kv, store, get: (key: string) => store.get(key) };
+  return { kv, store, ttls, get: (key: string) => store.get(key) };
 }

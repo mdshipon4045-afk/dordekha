@@ -129,4 +129,22 @@ describe("the history cache", () => {
     expect(series).toHaveLength(1);
     expect(series[0]!.ravg).toBe(80);
   });
+
+  it("keeps a day in the cache for long enough to be worth keeping", async () => {
+    // The shards used to live two days, so the cache held two days of
+    // history while the database held a hundred and twenty, and the site's
+    // claim about how far back it reached was the shorter of the two.
+    const { env, kv } = envWith();
+
+    await setHistoryDate(env, "2026-10-19", [row("2026-10-19", 47, 602, 80)]);
+
+    const shardTtl = kv.ttls.get("history:date:2026-10-19:47");
+    const manifestTtl = kv.ttls.get("history:index");
+    expect(shardTtl).toBeTruthy();
+    expect(manifestTtl).toBeTruthy();
+    // At least a week, and the free tier holds a thousand keys while a day
+    // costs sixty-four of them.
+    expect(shardTtl!).toBeGreaterThanOrEqual(7 * 24 * 60 * 60);
+    expect(manifestTtl!).toBeGreaterThanOrEqual(7 * 24 * 60 * 60);
+  });
 });

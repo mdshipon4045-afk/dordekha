@@ -25,6 +25,20 @@ const SNAPSHOT_KEY = "snapshot:latest";
 const AGGREGATE_TTL = 6 * 60 * 60;
 const SNAPSHOT_TTL = 60 * 60 * 24 * 2;
 
+/**
+ * How long a day's history stays in the cache.
+ *
+ * The shards live two days, so the cache held two days of history while the
+ * database held a hundred and twenty, and the site's claim about how far
+ * back it reached was the shorter of the two.
+ *
+ * The free tier holds a thousand keys and a day costs sixty-four of them, so
+ * twelve days fits with room to spare. The writes are the other limit: a
+ * backfilled day costs sixty-four writes, and the tier allows a thousand a
+ * day.
+ */
+const HISTORY_TTL = 60 * 60 * 24 * 12;
+
 export interface SnapshotRow {
   d: number; // district id
   c: number; // commodity id
@@ -469,7 +483,7 @@ export async function setHistoryDate(env: Env, date: string, rows: HistoryRow[])
   const previous = manifest.days.find((d) => d.date === date);
 
   for (const [district, districtRows] of byDistrict) {
-    await kvSet(env, shardKey(date, district), { date, district, rows: districtRows }, SNAPSHOT_TTL);
+    await kvSet(env, shardKey(date, district), { date, district, rows: districtRows }, HISTORY_TTL);
   }
 
   const districts = [...new Set([...(previous?.districts ?? []), ...byDistrict.keys()])].sort((a, b) => a - b);
@@ -479,7 +493,7 @@ export async function setHistoryDate(env: Env, date: string, rows: HistoryRow[])
   const days = manifest.days.filter((d) => d.date !== date);
   days.push({ date, districts, rowCounts, rows: total });
   days.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  await kvSet(env, HISTORY_INDEX_KEY, { days, updatedAt: new Date().toISOString() }, SNAPSHOT_TTL);
+  await kvSet(env, HISTORY_INDEX_KEY, { days, updatedAt: new Date().toISOString() }, HISTORY_TTL);
 }
 
 /** The days the history holds, oldest first. */
