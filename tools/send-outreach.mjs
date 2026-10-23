@@ -84,14 +84,38 @@ if (preview) {
  * The first attempt sent eighteen in four minutes and the mailbox was
  * punished for it: letters bounced, one recipient's server refused the
  * message outright, and the sending account's reputation took the hit.
- * A cold letter is worth more when it arrives alone. Three a day, each
- * with a gap of minutes between them, and never twice to the same
- * address.
+ * The fix is not three a day — at a four-in-a-hundred reply rate that is
+ * a month for a handful of replies. It is volume with a warm-up and a
+ * human pace: ten, then fifteen, then twenty a day, each letter minutes
+ * apart, each written for its reader, and never twice to one company.
  */
-const PER_DAY = 3;
-const GAP_MINUTES = [4, 9];
+const PER_DAY = 20;
+const WARMUP = [10, 15, 20];
+const GAP_MINUTES = [8, 18];
 
 const log = [];
+// A company gets one letter, even if two addresses on its domain are known.
+// Shared mailbox providers are not companies: two Gmail prospects are two
+// different readers, so their domain must not block the second letter.
+const PUBLIC_MAILBOXES = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "yahoo.com",
+  "ymail.com",
+  "hotmail.com",
+  "outlook.com",
+  "live.com",
+  "msn.com",
+  "icloud.com",
+  "me.com",
+  "aol.com",
+  "mail.com",
+  "gmx.com",
+  "zoho.com",
+  "protonmail.com",
+  "yandex.com",
+]);
+const isCompanyDomain = (domain) => Boolean(domain) && !PUBLIC_MAILBOXES.has(domain);
 const history = (() => {
   try {
     return JSON.parse(readFileSync(".private/outreach-log.json", "utf8"));
@@ -99,14 +123,26 @@ const history = (() => {
     return [];
   }
 })();
-const sentToday = history.filter(
-  (h) => h.sentAt && h.sentAt.slice(0, 10) === new Date().toISOString().slice(0, 10),
-).length;
+const today = new Date().toISOString().slice(0, 10);
+const sentToday = history.filter((h) => h.sentAt && h.sentAt.slice(0, 10) === today).length;
 const alreadySent = new Set(history.filter((h) => h.messageId).map((h) => h.email));
-console.log(
-  `today: ${sentToday} of ${PER_DAY} letters already went out; ${alreadySent.size} addresses have had one`,
+const sentDomains = new Set(
+  history
+    .filter((h) => h.messageId && h.email)
+    .map((h) => h.email.split("@")[1]?.toLowerCase())
+    .filter(isCompanyDomain),
 );
-if (sentToday >= PER_DAY) {
+// The first days are a warm-up: the mailbox earns volume, it does not claim it.
+const priorDays = new Set(
+  history
+    .filter((h) => h.messageId && h.sentAt && h.sentAt.slice(0, 10) < today)
+    .map((h) => h.sentAt.slice(0, 10)),
+).size;
+const allowance = WARMUP[Math.min(priorDays, WARMUP.length - 1)];
+console.log(
+  `today: ${sentToday} of ${allowance} letters already went out; ${alreadySent.size} addresses have had one`,
+);
+if (sentToday >= allowance) {
   console.log("the day's allowance is spent — the rest wait for tomorrow");
 }
 
@@ -116,11 +152,16 @@ for (const p of prospects) {
     console.log(`skip ${p.email} — it already has a letter`);
     continue;
   }
+  const domain = p.email.split("@")[1]?.toLowerCase();
+  if (isCompanyDomain(domain) && sentDomains.has(domain)) {
+    console.log(`skip ${p.email} — ${domain} already has a letter`);
+    continue;
+  }
   if (dry) {
     console.log(`--- would send to ${p.email} (${p.company})`);
     continue;
   }
-  if (sentToday + log.filter((l) => l.messageId).length >= PER_DAY) {
+  if (sentToday + log.filter((l) => l.messageId).length >= allowance) {
     console.log(`stopping for today — the rest wait for tomorrow`);
     break;
   }
@@ -134,9 +175,20 @@ for (const p of prospects) {
     });
     console.log(`sent: ${p.email} — ${p.company} — ${info.messageId}`);
     log.push({ ...p, sentAt: new Date().toISOString(), messageId: info.messageId });
+    if (isCompanyDomain(domain)) sentDomains.add(domain);
   } catch (err) {
     console.log(`FAILED ${p.email}: ${err instanceof Error ? err.message : String(err)}`);
     log.push({ ...p, error: String(err) });
+  }
+  // Write after every letter, not at the end: a run that is interrupted
+  // must not forget who already received one.
+  if (!dry) {
+    const previous = history.filter((h) => h.messageId);
+    writeFileSync(
+      ".private/outreach-log.json",
+      JSON.stringify([...previous, ...log], null, 1),
+      "utf8",
+    );
   }
   // A pause between letters: minutes, not seconds, and not the same
   // every time.
