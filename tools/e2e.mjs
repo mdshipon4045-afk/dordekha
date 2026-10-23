@@ -43,6 +43,21 @@ async function post(path, body, headers = {}) {
   }
 }
 
+// ── the machine contract ────────────────────────────────────────────────────
+// The spec is advertised in llms.txt and the dataset page; a 404 there is a
+// broken promise to every client that tries to generate from it.
+{
+  const r = await get("/openapi.json");
+  let ok = false;
+  try {
+    const j = JSON.parse(r.text);
+    ok = r.status === 200 && typeof j.openapi === "string" && Object.keys(j.paths ?? {}).length > 0;
+    check("/openapi.json serves the spec", ok, `status=${r.status} paths=${Object.keys(j.paths ?? {}).length}`);
+  } catch {
+    check("/openapi.json serves the spec", false, `status=${r.status} ${r.text.slice(0, 60)}`);
+  }
+}
+
 // ── pages ───────────────────────────────────────────────────────────────────
 {
   const r = await get("/");

@@ -128,6 +128,10 @@ function splitSuffix(pathname: string): { path: string; forced: Format | null } 
 function withCommonHeaders(res: Response, ctx: RenderContext): Response {
   const h = new Headers(res.headers);
   h.set("Vary", "Accept");
+  // The data is public and read-only; a browser app should not need a proxy
+  // just to read a price. This also lets the API be listed in the public API
+  // directories, which check CORS before they list a service.
+  h.set("Access-Control-Allow-Origin", "*");
   // HTTP header values must be ASCII. The source name is Bangla, so it is
   // carried in the body and llms.txt instead, and only an ASCII id goes here.
   h.set("X-Content-Source-Id", "moa-dam");
@@ -425,9 +429,24 @@ export default {
         const part = await sitemapPart(env, path.slice("/sitemap-".length), latest);
         return part ?? json({ error: "Not Found" }, ctxR, 404);
       }
-      if (path === "/openapi.json") return openApi(env, ctxR);
+      // The spec's own path ends in .json, and splitSuffix would read that
+      // as a request for the JSON view of /openapi. Match the raw pathname.
+      if (url.pathname === "/openapi.json") return openApi(env, ctxR);
 
       // ── API ────────────────────────────────────────────────────────────
+      // A browser that sends a key must preflight first; answer it here so
+      // the API can be called from a page without a proxy.
+      if (path.startsWith("/api/") && request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key, MCP-Protocol-Version",
+            "Access-Control-Max-Age": "86400",
+          },
+        });
+      }
       if (path === "/api/v1/account") return accountRoute(env, ctxR, request);
       if (path.startsWith("/api/")) {
         const access = await enforceAccess(env, request, path, "api");
